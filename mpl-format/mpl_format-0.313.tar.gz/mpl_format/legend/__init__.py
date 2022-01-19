@@ -1,0 +1,1 @@
+from mpl_format.legend.legend_formatter import LegendFormatter
