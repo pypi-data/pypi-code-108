@@ -1,0 +1,3 @@
+"""
+riptable tests.
+"""
