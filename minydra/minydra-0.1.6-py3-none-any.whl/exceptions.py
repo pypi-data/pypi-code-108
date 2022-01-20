@@ -1,0 +1,2 @@
+class MinydraWrongArgumentException(Exception):
+    pass
