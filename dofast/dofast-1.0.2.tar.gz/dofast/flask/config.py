@@ -1,0 +1,1 @@
+AUTH_KEY = 'fbJU_viklo2PC2ERI_CsQuZIV558ehSdETGVvxxbjBmZ1oIv6d2YfQBV'
