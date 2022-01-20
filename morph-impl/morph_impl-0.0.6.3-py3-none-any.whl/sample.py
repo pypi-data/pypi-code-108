@@ -1,0 +1,4 @@
+
+
+def printSimple():
+    print("Simple")
