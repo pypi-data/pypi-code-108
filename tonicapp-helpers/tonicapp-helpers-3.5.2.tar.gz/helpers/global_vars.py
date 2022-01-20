@@ -1,0 +1,5 @@
+
+# Software type
+SOFTWARE_TYPE_MOBILE = 'mobile'
+SOFTWARE_TYPE_WEB = 'web'
+SOFTWARE_TYPE_BACKOFFICE = None
