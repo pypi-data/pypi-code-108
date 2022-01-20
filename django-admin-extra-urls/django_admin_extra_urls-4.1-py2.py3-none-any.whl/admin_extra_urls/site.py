@@ -1,0 +1,2 @@
+class AdminSiteMixin:
+    pass
