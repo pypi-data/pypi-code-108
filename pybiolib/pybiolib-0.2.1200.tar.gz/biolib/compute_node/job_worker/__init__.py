@@ -1,0 +1,1 @@
+from biolib.compute_node.job_worker.job_worker import JobWorkerProcess
