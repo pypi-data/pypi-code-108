@@ -1,0 +1,279 @@
+import numpy as np
+import multiprocessing as mp
+from abc import ABC, abstractmethod
+from typing import List
+from .interface import Interface
+from .utils import merge_params
+
+
+class Environment(ABC):
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        pass
+
+    @abstractmethod
+    def __init__(self, interface: Interface, params=None):
+        self.interface = interface
+        self.params = merge_params(self.get_default_params(), params)
+
+    # List all available variables
+    @staticmethod
+    @abstractmethod
+    def list_vars() -> List[str]:
+        pass
+
+    # List all available observations
+    @staticmethod
+    @abstractmethod
+    def list_obses() -> List[str]:
+        pass
+
+    # Get the default params of the environment
+    @staticmethod
+    @abstractmethod
+    def get_default_params() -> dict:
+        pass
+
+    # Get current variable
+    # Unsafe version (var won't be checked beforehand)
+    @abstractmethod
+    def _get_var(self, var: str):
+        pass
+
+    # Set variable
+    # Unsafe version
+    @abstractmethod
+    def _set_var(self, var: str, x):
+        pass
+
+    # Get observation
+    # Unsafe version
+    @abstractmethod
+    def _get_obs(self, obs: str):
+        pass
+
+    # Get variable range
+    # Unsafe version
+    def _get_vrange(self, var: str):
+        return [0, 1]
+
+    # Safe version of _get_vrange
+    def get_vrange(self, var: str):
+        if var not in self.list_vars():
+            raise Exception(f'Variable {var} doesn\'t exist!')
+
+        return self._get_vrange(var)
+
+    # Get all the variable ranges
+    def get_vranges(self, vars=None):
+        if vars is None:
+            return [self._get_vrange(var) for var in self.list_vars()]
+        else:
+            return [self.get_vrange(var) for var in vars]
+
+    # Get all the variable ranges
+    def get_vranges_dict(self, vars=None):
+        book = {}
+        if vars is None:
+            vars = self.list_vars()
+            for var in vars:
+                book[var] = self._get_vrange(var)
+        else:
+            for var in vars:
+                book[var] = self.get_vrange(var)
+        return book
+
+    # Safe version of _get_var
+    def get_var(self, var: str):
+        if var not in self.list_vars():
+            raise Exception(f'Variable {var} doesn\'t exist!')
+
+        return self._get_var(var)
+
+    # Safe version of _set_var
+    def set_var(self, var: str, x):
+        if var not in self.list_vars():
+            raise Exception(f'Variable {var} doesn\'t exist!')
+
+        return self._set_var(var, x)
+
+    # Safe version of _get_obs
+    def get_obs(self, obs: str):
+        if obs not in self.list_obses():
+            raise Exception(f'Observation {obs} doesn\'t exist!')
+
+        return self._get_obs(obs)
+
+    def get_vars(self, vars: List[str]) -> list:
+        values = []
+        for var in vars:
+            values.append(self.get_var(var))
+
+        return values
+
+    def get_vars_async(self, vars: List[str]) -> list:
+        values = []
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self.get_var, args=(var,)) for var in vars]
+        pool.close()
+        pool.join()
+        for result in results:
+            values.append(result.get())
+
+        return values
+
+    # Unsafe version of get_vars
+    def _get_vars(self, vars: List[str]) -> list:
+        values = []
+        for var in vars:
+            values.append(self._get_var(var))
+
+        return values
+
+    def _get_vars_async(self, vars: List[str]) -> list:
+        values = []
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self._get_var, args=(var,)) for var in vars]
+        pool.close()
+        pool.join()
+        for result in results:
+            values.append(result.get())
+
+        return values
+
+    def get_vars_dict(self) -> dict:
+        vars = self.list_vars()
+        book = {}
+        for var in vars:
+            book[var] = self._get_var(var)
+
+        return book
+
+    def get_vars_dict_async(self) -> dict:
+        vars = self.list_vars()
+        book = {}
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self._get_var, args=(var,)) for var in vars]
+        pool.close()
+        pool.join()
+        for idx, result in enumerate(results):
+            book[vars[idx]] = result.get()
+
+        return book
+
+    def set_vars(self, vars: List[str], values: list):
+        assert len(vars) == len(
+            values), 'Variables and values number mismatch!'
+
+        for idx, var in enumerate(vars):
+            self.set_var(var, values[idx])
+
+    def set_vars_async(self, vars: List[str], values: list):
+        assert len(vars) == len(
+            values), 'Variables and values number mismatch!'
+
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self.set_var, args=(var, values[idx]))
+                   for idx, var in enumerate(vars)]
+        pool.close()
+        pool.join()
+
+    # Unsafe version of set_vars
+    def _set_vars(self, vars: List[str], values: list):
+        assert len(vars) == len(
+            values), 'Variables and values number mismatch!'
+
+        for idx, var in enumerate(vars):
+            self._set_var(var, values[idx])
+
+    def _set_vars_async(self, vars: List[str], values: list):
+        assert len(vars) == len(
+            values), 'Variables and values number mismatch!'
+
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self._set_var, args=(var, values[idx]))
+                   for idx, var in enumerate(vars)]
+        pool.close()
+        pool.join()
+
+    def set_vars_dict(self, book: dict):
+        for var, val in book.items():
+            self.set_var(var, val)
+
+    def set_vars_dict_async(self, book: dict):
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self.set_var, args=(var, val))
+                   for var, val in book.items()]
+        pool.close()
+        pool.join()
+
+    # Unsafe version of set_vars_dict
+    def _set_vars_dict(self, book: dict):
+        for var, val in book.items():
+            self._set_var(var, val)
+
+    def _set_vars_dict_async(self, book: dict):
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self._set_var, args=(var, val))
+                   for var, val in book.items()]
+        pool.close()
+        pool.join()
+
+    def get_obses(self, obses: List[str]) -> list:
+        values = []
+        for obs in obses:
+            values.append(self.get_obs(obs))
+
+        return values
+
+    def get_obses_async(self, obses: List[str]) -> list:
+        values = []
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self.get_obs, args=(obs,)) for obs in obses]
+        pool.close()
+        pool.join()
+        for result in results:
+            values.append(result.get())
+
+        return values
+
+    # Unsafe version of get_obses
+    def _get_obses(self, obses: List[str]) -> list:
+        values = []
+        for obs in obses:
+            values.append(self._get_obs(obs))
+
+        return values
+
+    def _get_obses_async(self, obses: List[str]) -> list:
+        values = []
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self._get_obs, args=(obs,)) for obs in obses]
+        pool.close()
+        pool.join()
+        for result in results:
+            values.append(result.get())
+
+        return values
+
+    def get_obses_dict(self) -> dict:
+        obses = self.list_obses()
+        book = {}
+        for obs in obses:
+            book[obs] = self._get_obs(obs)
+
+        return book
+
+    def get_obses_dict_async(self) -> dict:
+        obses = self.list_obses()
+        book = {}
+        pool = mp.Pool(mp.cpu_count())
+        results = [pool.apply_async(self._get_obs, args=(obs,)) for obs in obses]
+        pool.close()
+        pool.join()
+        for idx, result in enumerate(results):
+            book[obses[idx]] = result.get()
+
+        return book
