@@ -1,0 +1,121 @@
+import functools
+import logging
+import traceback
+import typing
+
+import ccc.elasticsearch
+import oci.auth as oa
+import oci.client as oc
+import model.container_registry
+
+
+logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache
+def oci_cfg_lookup() -> typing.Callable[[str, oa.Privileges, bool], oa.OciCredentials]:
+    def find_credentials(
+        image_reference: str,
+        privileges: oa.Privileges=oa.Privileges.READONLY,
+        absent_ok: bool=True,
+    ):
+        registry_cfg = model.container_registry.find_config(
+            image_reference=image_reference,
+            privileges=privileges,
+        )
+        if not registry_cfg:
+            if absent_ok:
+                return None # fallback to docker-cfg (or try w/o auth)
+            else:
+                raise RuntimeError(
+                f'No credentials found for {image_reference} with {privileges=}'
+            )
+        creds = registry_cfg.credentials()
+        return oa.OciBasicAuthCredentials(
+            username=creds.username(),
+            password=creds.passwd(),
+        )
+
+    return find_credentials
+
+
+def oci_client(
+    credentials_lookup: typing.Callable = oci_cfg_lookup(),
+    install_logging_handler: bool = True
+) -> oc.Client:
+    def base_api_lookup(image_reference):
+        registry_cfg = model.container_registry.find_config(
+            image_reference=image_reference,
+            privileges=None,
+        )
+        if registry_cfg and (base_url := registry_cfg.api_base_url()):
+            return base_url
+        return oc.base_api_url(image_reference)
+
+    routes = oc.OciRoutes(base_api_lookup)
+
+    if install_logging_handler:
+        try:
+            _add_oci_request_logging_handler_unless_already_registered()
+        except:
+            # do not fail just because of logging-issue
+            import traceback
+            traceback.print_exc()
+
+    return oc.Client(
+        credentials_lookup=credentials_lookup,
+        routes=routes,
+    )
+
+
+class _OciRequestHandler(logging.Handler):
+    def __init__(
+        self,
+        level,
+        es_client,
+        *args,
+        **kwargs,
+    ) -> None:
+        self.es_client = es_client
+        super().__init__(level=level, *args, **kwargs)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        method = record.__dict__.get('method')
+        url = record.__dict__.get('url')
+        try:
+            self.es_client.store_document(
+                index='oci_request',
+                body={
+                    'method': method,
+                    'url': url,
+                    'stacktrace': traceback.format_stack(),
+                }
+            )
+        except:
+            logger.warning(traceback.format_exc())
+            logger.warning('could not send oci request log to elastic search')
+
+
+_client_sentinel = object()
+_es_client = _client_sentinel # init by first caller
+_es_handler = None
+
+
+def _add_oci_request_logging_handler_unless_already_registered():
+    global _es_client
+    global _es_handler
+
+    if _es_client is _client_sentinel:
+        _es_client = ccc.elasticsearch.default_client_if_available()
+
+    if not _es_client:
+        return
+
+    if not _es_handler:
+        _es_handler = _OciRequestHandler(level=logging.DEBUG, es_client=_es_client)
+
+    es_logger = logging.getLogger('oci.client.request_logger')
+    es_logger.setLevel(logging.DEBUG)
+
+    if not _es_handler in es_logger.handlers:
+        es_logger.addHandler(_es_handler)
