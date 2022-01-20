@@ -1,0 +1,21 @@
+class StytchError(Exception):
+    def __init__(
+        self,
+        status_code: int = None,
+        request_id: str = None,
+        error_type: str = None,
+        error_message: str = None,
+        error_url: str = None,
+        **kwargs
+    ):
+        self.status_code = status_code
+        self.request_id = request_id
+        self.error_type = error_type
+        self.error_message = error_message
+        self.error_url = error_url
+
+    def __repr__(self):
+        return "StytchError {0}".format(self.__dict__)
+
+    def __str__(self):
+        return str(self.__dict__)
