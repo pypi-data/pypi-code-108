@@ -1,0 +1,1 @@
+import banner.pandas_decorator
