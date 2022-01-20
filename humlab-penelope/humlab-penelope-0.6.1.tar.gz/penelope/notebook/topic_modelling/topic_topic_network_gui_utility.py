@@ -1,0 +1,118 @@
+# Visualize topic co-occurrence
+from typing import Any, Dict, List, Tuple, Union
+
+import bokeh
+import bokeh.plotting
+import pandas as pd
+import penelope.network.networkx.utility as network_utility
+from IPython.display import display
+from loguru import logger
+from penelope import topic_modelling, utility
+from penelope.network import plot_utility
+
+
+def get_topic_titles(topic_token_weights, topic_id=None, n_words=100):
+    df_temp = (
+        topic_token_weights if topic_id is None else topic_token_weights[(topic_token_weights.topic_id == topic_id)]
+    )
+    df = (
+        df_temp.sort_values('weight', ascending=False)
+        .groupby('topic_id')
+        .apply(lambda x: ' '.join(x.token[:n_words].str.title()))
+    )
+    return df
+
+
+def get_filtered_network_data(
+    inferred_topics: topic_modelling.InferredTopicsData,
+    filters: Dict[str, Any],
+    threshold: float,
+    ignores: List[int],
+    period: Union[int, Tuple[int, int]],
+    n_docs: int,
+) -> pd.DataFrame:
+
+    df: pd.DataFrame = topic_modelling.filter_document_topic_weights(
+        inferred_topics.document_topic_weights, filters=filters, threshold=threshold
+    )
+
+    if ignores is not None:
+        df = df[~df.topic_id.isin(ignores)]
+
+    if len(period or []) == 2:
+        df = df[(df.year >= period[0]) & (df.year <= period[1])]
+
+    if isinstance(period, int):
+        df = df[df.year == period]
+
+    df = df.merge(df, how='inner', left_on='document_id', right_on='document_id')
+    df = df[(df.topic_id_x < df.topic_id_y)]
+
+    df = df.groupby([df.topic_id_x, df.topic_id_y]).size().reset_index()
+
+    df.columns = ['source', 'target', 'n_docs']
+
+    if n_docs > 1:
+        df = df[df.n_docs >= n_docs]
+
+    return df
+
+
+# pylint: disable=too-many-arguments, too-many-locals
+def display_topic_topic_network(
+    inferred_topics: topic_modelling.InferredTopicsData,
+    filters: Dict[str, Any],
+    period: Union[int, Tuple[int, int]] = None,
+    ignores: List[int] = None,
+    threshold: float = 0.10,
+    layout: str = 'Fruchterman-Reingold',
+    n_docs: int = 1,
+    scale: float = 1.0,
+    output_format: str = 'table',
+    element_id: str = '',
+    titles=None,
+    topic_proportions=None,
+    node_range: Tuple[int, int] = (20, 60),
+    edge_range: Tuple[int, int] = (1, 10),
+):
+    try:
+
+        document_index = inferred_topics.document_index
+
+        if 'document_id' not in document_index.columns:
+            raise ValueError("Supplied document index has no document_id")
+
+        df = get_filtered_network_data(inferred_topics, filters, threshold, ignores, period, n_docs)
+
+        if len(df) == 0:
+            print('No data. Please change selections.')
+            return
+
+        if output_format == 'network':
+            network = network_utility.create_network(df, source_field='source', target_field='target', weight='n_docs')
+            p = plot_utility.plot_network(
+                network=network,
+                layout_algorithm=layout,
+                scale=scale,
+                threshold=0.0,
+                node_description=titles,
+                node_proportions=topic_proportions,
+                weight_scale=1.0,
+                normalize_weights=False,
+                element_id=element_id,
+                figsize=(1200, 800),
+                node_range=node_range,
+                edge_range=edge_range,
+            )
+            bokeh.plotting.show(p)
+        else:
+
+            df.columns = ['Source', 'Target', 'DocCount']
+            if output_format == 'table':
+                display(df)
+            elif output_format.lower() in ('xlsx', 'csv', 'clipboard'):
+                utility.ts_store(data=df, extension=output_format.lower(), basename='topic_topic_network')
+
+    except Exception as ex:  # pylint: disable=bare-except
+        print("No data: please adjust filters")
+        logger.info(ex)
