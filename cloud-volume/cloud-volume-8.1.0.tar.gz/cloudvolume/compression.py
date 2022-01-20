@@ -1,0 +1,1 @@
+from cloudfiles.compression import *
