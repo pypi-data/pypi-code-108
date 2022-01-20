@@ -1,0 +1,5 @@
+DATE_REGEX = r"\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d(?:\.\d{3})Z"
+DATE_TIME_FORMAT_ERROR_MESSAGE = "does not match expected format YYYY-MM-DDTHH:MM:SS.fffZ"
+POINT_LABEL_VALUE_FORMAT_ERROR_MESSAGE = "str type expected"
+POINT_LABEL_KEY_FORMAT_ERROR_MESSAGE = "does not match expected format ^[0-9]+$"
+INVALID_DICT_MESSAGE = "value is not a valid dict"
