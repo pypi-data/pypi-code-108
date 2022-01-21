@@ -1,0 +1,13 @@
+"""Common configuration parameters for test cases"""
+
+URL = "nats://127.0.0.1:4222"
+CREDENTIALS = ""
+CLUSTER_ID = "py-msgp-cluster"
+PRODUCER_CLIENT_ID = "test-producer-client"
+CONSUMER_CLIENT_ID = "test-consumer-client"
+CONSUMER_MPA_CLIENT_ID = "test-consumer-mpa-client"
+PRODUCER_MPA_CLIENT_ID = "test-producer-mpa-client"
+PROCESSOR_MPA_CLIENT_ID = "test-processor-mpa-client"
+INBOUND_TOPIC = "test-mpa-inbound-topic-name"
+OUTBOUND_TOPIC = "test-mpa-outbound-topic-name"
+TEST_PAYLOAD = b"test payload..."
