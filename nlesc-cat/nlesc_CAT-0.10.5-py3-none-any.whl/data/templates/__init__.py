@@ -1,0 +1,1 @@
+"""Various .yaml templates."""
