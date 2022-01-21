@@ -1,0 +1,9 @@
+﻿'''__init__.py'''
+
+
+from mastapy._internal.dummy_base_class_importer import _DummyBaseClassImport
+
+
+with _DummyBaseClassImport():
+    from ._1221 import FitAndTolerance
+    from ._1222 import SAESplineTolerances
