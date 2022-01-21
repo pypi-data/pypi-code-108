@@ -1,0 +1,46 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+
+import time
+import uuid
+import os
+import _thread
+from jimit import JITime
+
+
+__author__ = 'James Iter'
+__date__ = '16/1/24'
+__contact__ = 'james.iter.cn@gmail.com'
+__copyright__ = '(c) 2015 by James Iter.'
+
+
+class TransactionSerialNumber(object):
+
+    def __init__(self):
+        # YYYYMMDDHHmmSS
+        self.date_time = JITime.now_date_time(date_separator='', time_separator='', dt_separator='')
+        # MAC 地址的后两段的十进制值, 如 ff:ff 为 65535
+        self.mac_number = '{:05d}'.format(int(uuid.uuid1().__str__()[32:], 16))
+        self.pid = '{:05d}'.format(os.getpid())
+        self.tsn_counter = 0
+
+    def increment_tsn_counter(self, number=1):
+        self.tsn_counter += number
+
+    def tick(self):
+        self.date_time = JITime.now_date_time(date_separator='', time_separator='', dt_separator='')
+        self.tsn_counter = 0
+
+    def generate_tsn(self, separator=''):
+        self.increment_tsn_counter(1)
+        return separator.join([self.date_time, self.mac_number, self.pid, '{:05d}'.format(self.tsn_counter)])
+
+    def watch_tsn(self):
+        while True:
+            time.sleep(1)
+            self.tick()
+
+    def launch(self):
+        _thread.start_new_thread(self.watch_tsn, ())
+
