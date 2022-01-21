@@ -1,0 +1,1 @@
+from .implementations.mongo import MongoRepository
