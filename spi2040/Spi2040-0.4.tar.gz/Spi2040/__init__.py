@@ -1,0 +1,1 @@
+from Spi2040.BasysV1 import SpiDevice
