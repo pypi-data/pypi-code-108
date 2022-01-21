@@ -1,0 +1,514 @@
+# -*- coding: utf-8 -*-
+# ------------------------------------------------------------------------------
+# GNU General Public License (GPL)
+# ------------------------------------------------------------------------------
+'''This module defines functions that allow to migrate to a given version of
+   PloneMeeting for production sites that run older versions of PloneMeeting.
+   You must run every migration function in the right chronological order.'''
+
+from collections import OrderedDict
+from collective.behavior.talcondition.behavior import ITALCondition
+from collective.documentgenerator.search_replace.pod_template import SearchAndReplacePODTemplates
+from DateTime import DateTime
+from eea.facetednavigation.interfaces import ICriteria
+from imio.helpers.cache import cleanRamCacheFor
+from imio.helpers.catalog import addOrUpdateColumns
+from imio.helpers.catalog import addOrUpdateIndexes
+from imio.helpers.content import object_values
+from imio.helpers.content import uuidToObject
+from imio.migrator.migrator import Migrator as BaseMigrator
+from imio.pyutils.utils import replace_in_list
+from natsort import humansorted
+from operator import attrgetter
+from plone import api
+from Products.CMFPlone.utils import base_hasattr
+from Products.PloneMeeting.setuphandlers import columnInfos
+from Products.PloneMeeting.setuphandlers import indexInfos
+from Products.PloneMeeting.utils import forceHTMLContentTypeForEmptyRichFields
+from Products.ZCatalog.ProgressHandler import ZLogHandler
+from zope.i18n import translate
+
+import logging
+import os
+
+
+logger = logging.getLogger('PloneMeeting')
+
+
+class Migrator(BaseMigrator):
+    '''Abstract class for creating a migrator.'''
+
+    already_migrated = False
+
+    def __init__(self, context):
+        BaseMigrator.__init__(self, context, disable_linkintegrity_checks=True)
+        self.tool = api.portal.get_tool('portal_plonemeeting')
+        # disable email notifications for every MeetingConfigs and save
+        # current state to set it back after migration in self.finish
+        self.cfgsMailMode = {}
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            self.cfgsMailMode[cfg.getId()] = cfg.getMailMode()
+            cfg.setMailMode('deactivated')
+        # disable advices invalidation for every MeetingConfigs and save
+        # current state to set it back after migration in self.finish
+        self.cfgsAdvicesInvalidation = {}
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            self.cfgsAdvicesInvalidation[cfg.getId()] = cfg.getEnableAdviceInvalidation()
+            cfg.setEnableAdviceInvalidation(False)
+        self.profile_name = u'profile-Products.PloneMeeting:default'
+
+    def reorderSkinsLayers(self):
+        """Reapply skins of Products.PloneMeeting + self.profile_name."""
+        # re-apply the PloneMeeting skins and the self.profile_name skin if different
+        self.runProfileSteps('Products.PloneMeeting',
+                             steps=['skins'],
+                             profile='default')
+        if self.profile_name != u'profile-Products.PloneMeeting:default':
+            product_name = self.profile_name.split(':')[0][8:]
+            self.runProfileSteps(product_name,
+                                 steps=['skins'],
+                                 profile='default')
+
+    def upgradeDependencies(self):
+        """Upgrade every dependencies."""
+        profile_names = self.ps.getDependenciesForProfile(u'profile-Products.PloneMeeting:default')
+        for profile_name in profile_names:
+            self.upgradeProfile(profile_name)
+        if self.profile_name != 'profile-Products.PloneMeeting:default':
+            profile_names = self.ps.getDependenciesForProfile(self.profile_name)
+            for profile_name in profile_names:
+                self.upgradeProfile(profile_name)
+
+    def reinstall(self, profiles, ignore_dependencies=False, dependency_strategy=None):
+        """Override to be able to call _after_reinstall at the end."""
+        self._before_reinstall()
+        BaseMigrator.reinstall(self, profiles, ignore_dependencies, dependency_strategy)
+        self._after_reinstall()
+
+    def _before_reinstall(self):
+        """Before self.reinstall hook that let's a subplugin knows that the profile
+           will be executed and may launch some migration steps before PM ones."""
+        # save CKeditor custom styles
+        cke_props = self.portal.portal_properties.ckeditor_properties
+        self.menuStyles = cke_props.menuStyles
+
+    def _after_reinstall(self):
+        """After self.reinstall hook that let's a subplugin knows that the profile
+           has been executed and may launch some migration steps before PM ones."""
+        # set back CKeditor custom styles
+        cke_props = self.portal.portal_properties.ckeditor_properties
+        cke_props.menuStyles = self.menuStyles
+
+    def getWorkflows(self, meta_types=['Meeting',
+                                       'MeetingItem',
+                                       'MeetingItemTemplate',
+                                       'MeetingItemRecurring']):
+        """Returns every workflows used for every portal_types based on given p_meta_type."""
+        portal_types = []
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            for meta_type in meta_types:
+                if meta_type == 'Meeting':
+                    portal_types.append(cfg.getMeetingTypeName())
+                elif meta_type == 'MeetingItem':
+                    portal_types.append(cfg.getItemTypeName())
+                else:
+                    # MeetingItemXXX type
+                    portal_types.append(cfg.getItemTypeName(configType=meta_type))
+        wf_ids = [self.wfTool.getWorkflowsFor(portal_type)[0].getId()
+                  for portal_type in portal_types]
+        return wf_ids
+
+    def addCatalogIndexesAndColumns(self, indexes=True, columns=True, update_metadata=True):
+        """ """
+        if indexes:
+            addOrUpdateIndexes(self.portal, indexInfos)
+        if columns:
+            addOrUpdateColumns(self.portal, columnInfos, update_metadata=update_metadata)
+
+    def updateTALConditions(self, old_word, new_word):
+        """Update every elements having a tal_condition, replace given old_word by new_word."""
+        logger.info('Updating TAL conditions, replacing "{0}" by "{1}"'.format(old_word, new_word))
+        # ITALConditionable : DashboardCollection, PODTemplates
+        for brain in api.content.find(
+                object_provides='collective.behavior.talcondition.interfaces.ITALConditionable'):
+            obj = brain.getObject()
+            adapted = ITALCondition(obj)
+            tal_condition = adapted.get_tal_condition()
+            if tal_condition and old_word in tal_condition:
+                tal_condition = tal_condition.replace(old_word, new_word)
+                adapted.set_tal_condition(tal_condition)
+                logger.info('Word "{0}" was replaced by "{1}" for element "{2}"'.format(
+                    old_word, new_word, repr(obj)))
+            # mailing_lists for POD templates
+            if obj.__class__.__name__ == "ConfigurablePODTemplate":
+                mailing_lists = obj.mailing_lists
+                if mailing_lists and old_word in mailing_lists:
+                    mailing_lists = mailing_lists.replace(old_word, new_word)
+                    obj.mailing_lists = mailing_lists
+                    logger.info('Word "{0}" was replaced by "{1}" for element "{2}"'.format(
+                        old_word, new_word, repr(obj)))
+
+        # MeetingConfig
+        for cfg in object_values(self.tool, 'MeetingConfig'):
+            # datagrid fields
+            # column names holding TAL expressions
+            datagrid_tal_fields = ['tal_expression',
+                                   'gives_auto_advice_on',
+                                   'available_on',
+                                   'item_access_on',
+                                   'meeting_access_on']
+            # datagrid fields holding TAL expressions
+            datagrid_fields = ["onTransitionFieldTransforms",
+                               "onMeetingTransitionItemActionToExecute",
+                               "customAdvisers",
+                               "powerObservers"]
+            for datagrid_fieldname in datagrid_fields:
+                adapted_value = getattr(cfg, datagrid_fieldname)
+                for row in adapted_value:
+                    for datagrid_tal_field in datagrid_tal_fields:
+                        if datagrid_tal_field in row:
+                            row[datagrid_tal_field] = \
+                                row[datagrid_tal_field].replace(old_word, new_word)
+                setattr(cfg, datagrid_fieldname, adapted_value)
+            # other fields
+            for field_name in ["itemReferenceFormat", "voteCondition"]:
+                field = cfg.getField(field_name)
+                value = field.get(cfg)
+                value = value.replace(old_word, new_word)
+                field.set(cfg, value)
+        # organizations
+        for brain in self.catalog(portal_type="organization"):
+            org = brain.getObject()
+            as_copy_group_on = getattr(org, "as_copy_group_on", None)
+            if as_copy_group_on is not None:
+                as_copy_group_on = as_copy_group_on.replace(old_word, new_word)
+                org.as_copy_group_on = as_copy_group_on
+        logger.info('Done.')
+
+    def updatePODTemplatesCode(self,
+                               replacements={},
+                               meeting_replacements={},
+                               item_replacements={}):
+        """Apply given p_replacements to every POD templates.
+           p_meeting_replacements are for POD templates used on Meetings and
+           p_item_replacements are for POD templates used on MeetingItems.
+           This let know what "self" is, a meeting or an item.
+           WARNING, be defensive with replacements :
+           - try to start with "self", "." or "=" and end with "(" or "()",
+             never use single word, a single word may also be a
+             POD template context variable ("listTypes", "review_state", ...)."""
+        logger.info('Fixing POD templates instructions....')
+        # first make sure collective.documentgenerator is upgraded
+        # before search&replace in POD templates
+        self.upgradeProfile("collective.documentgenerator:default")
+        results = []
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            pod_templates = object_values(
+                cfg.podtemplates,
+                ['ConfigurablePODTemplate', 'DashboardPODTemplate'])
+            # only keep POD templates having an odt_file
+            pod_templates = [pt for pt in pod_templates if pt.odt_file]
+            meeting_type_name = cfg.getMeetingTypeName()
+            item_type_name = cfg.getItemTypeName()
+            for pod_template in pod_templates:
+                logger.info('Checking POD template at %s...' % repr(pod_template))
+                with SearchAndReplacePODTemplates([pod_template]) as search_replace:
+                    # apply first portal_type specific replacements (Meeting or Item)
+                    if pod_template.pod_portal_types:
+                        if meeting_type_name in pod_template.pod_portal_types:
+                            for k, v in meeting_replacements.items():
+                                res = search_replace.replace(k, v, is_regex=False)
+                                if res:
+                                    results.append(res)
+                        if item_type_name in pod_template.pod_portal_types:
+                            for k, v in item_replacements.items():
+                                res = search_replace.replace(k, v, is_regex=False)
+                                if res:
+                                    results.append(res)
+                    # replacements compatible with any portal_types
+                    for k, v in replacements.items():
+                        res = search_replace.replace(k, v, is_regex=False)
+                        if res:
+                            results.append(res)
+        # format results and dump it in the Zope log
+        # as clean as possible so it can be used to know what changed
+        data = {}
+        for result in results:
+            pt_uid, infos = result.items()[0]
+            pt = uuidToObject(pt_uid, unrestricted=True)
+            pt_path_and_title = "{0} - {1}".format(
+                '/'.join(pt.getPhysicalPath()), pt.Title())
+            if pt_path_and_title not in data:
+                data[pt_path_and_title] = []
+                self.warnings.append('Replacements were done in POD template at %s'
+                                     % pt_path_and_title)
+            for info in infos:
+                data[pt_path_and_title].append("---- " + info.pod_expr)
+                data[pt_path_and_title].append("++++ " + info.new_pod_expr)
+        logger.info("REPLACEMENTS IN POD TEMPLATES")
+        if not data:
+            logger.info("=============================")
+            logger.info("No replacement was done.")
+        else:
+            # order data by pt_path
+            ordered_data = OrderedDict(sorted(data.items()))
+            output = ["============================="]
+            for pt_path_and_title, infos in ordered_data.items():
+                output.append("POD template " + pt_path_and_title)
+                output.append('-' * len("POD template " + pt_path_and_title))
+                for info in infos:
+                    output.append(info)
+            # make sure we do not mix unicode and utf-8
+            fixed_output = []
+            for line in output:
+                if isinstance(line, unicode):
+                    line = line.encode('utf8')
+                fixed_output.append(line)
+            logger.info('\n'.join(fixed_output))
+        logger.info('Done.')
+
+    def updateHolidays(self):
+        '''Update holidays using default holidays.'''
+        logger.info('Updating holidays...')
+        from Products.PloneMeeting.profiles import PloneMeetingConfiguration
+        defaultPMConfig = PloneMeetingConfiguration('', '', '')
+        defaultHolidays = [holiday['date'] for holiday in defaultPMConfig.holidays]
+        currentHolidays = [holiday['date'] for holiday in self.tool.getHolidays()]
+        storedHolidays = list(self.tool.getHolidays())
+        highestStoredHoliday = DateTime(storedHolidays[-1]['date'])
+        for defaultHoliday in defaultHolidays:
+            # update if not there and if higher that highest stored holiday
+            if defaultHoliday not in currentHolidays and \
+               DateTime(defaultHoliday) > highestStoredHoliday:
+                storedHolidays.append({'date': defaultHoliday})
+                logger.info('Adding {0} to holidays'.format(defaultHoliday))
+        self.tool.setHolidays(storedHolidays)
+        logger.info('Done.')
+
+    def addNewSearches(self):
+        """Add new searches by createSearches."""
+        logger.info('Adding new searches...')
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            cfg._createSubFolders()
+            cfg.createSearches(cfg._searchesInfo())
+            cfg.updateCollectionColumns()
+        logger.info('Done.')
+
+    def updateCollectionColumns(self):
+        """Update collections columns."""
+        logger.info("Updating collections columns for every MeetingConfigs...")
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            cfg.updateCollectionColumns()
+        logger.info('Done.')
+
+    def cleanMeetingConfigs(self, field_names=[]):
+        """Remove given p_field_names from every MeetingConfigs."""
+        logger.info('Cleaning MeetingConfigs...')
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            for field_name in field_names:
+                if base_hasattr(cfg, field_name):
+                    delattr(cfg, field_name)
+        logger.info('Done.')
+
+    def cleanTool(self, field_names=[]):
+        """Remove given p_field_names from ToolPloneMeeting."""
+        logger.info('Cleaning ToolPloneMeeting...')
+        for field_name in field_names:
+            if base_hasattr(self.tool, field_name):
+                delattr(self.tool, field_name)
+        logger.info('Done.')
+
+    def initNewHTMLFields(self, query={'meta_type': 'MeetingItem'}):
+        '''Make sure the content_type is correctly set to 'text/html' for new xhtml fields.'''
+        logger.info('Initializing new HTML fields...')
+        brains = self.portal.portal_catalog(**query)
+        pghandler = ZLogHandler(steps=1000)
+        pghandler.init('Initializing new HTML fields', len(brains))
+        i = 0
+        for brain in brains:
+            i += 1
+            pghandler.report(i)
+            itemOrMeeting = brain.getObject()
+            forceHTMLContentTypeForEmptyRichFields(itemOrMeeting)
+        pghandler.finish()
+        logger.info('Done.')
+
+    def cleanItemColumns(self, to_remove=[], to_replace={}):
+        '''When a column is no more available.'''
+        logger.info('Cleaning MeetingConfig columns related fields, '
+                    'removing columns "%s" and replacing "%s"...'
+                    % (', '.join(to_remove), ', '.join(to_replace.keys())))
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            for field_name in ('itemColumns',
+                               'availableItemsListVisibleColumns',
+                               'itemsListVisibleColumns'):
+                field = cfg.getField(field_name)
+                keys = field.get(cfg)
+                adapted_keys = [k for k in keys if k not in to_remove]
+                for orignal_value, new_value in to_replace.items():
+                    adapted_keys = replace_in_list(adapted_keys, orignal_value, new_value)
+                field.set(cfg, adapted_keys)
+        logger.info('Done.')
+
+    def cleanItemFilters(self, to_remove=[], to_add=[]):
+        '''When a faceted filter is no more available or has been renamed.'''
+        logger.info('Cleaning MeetingConfig faceted filter related fields, removing columns "%s"...'
+                    % ', '.join(to_remove))
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            for field_name in ('dashboardItemsListingsFilters',
+                               'dashboardMeetingAvailableItemsFilters',
+                               'dashboardMeetingLinkedItemsFilters'):
+                field = cfg.getField(field_name)
+                keys = field.get(cfg)
+                adapted_keys = [k for k in keys if k not in to_remove]
+                field.set(cfg, adapted_keys)
+        logger.info('Done.')
+
+    def cleanUsedItemAttributes(self, to_remove=[]):
+        '''When an item attribute is no more available or has been renamed.'''
+        logger.info('Cleaning MeetingConfig used item attributes, removing columns "%s"...'
+                    % ', '.join(to_remove))
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            usedItemAttrs = list(cfg.getUsedItemAttributes())
+            adapted_usedItemAttrs = [k for k in usedItemAttrs if k not in to_remove]
+            cfg.setUsedItemAttributes(adapted_usedItemAttrs)
+        logger.info('Done.')
+
+    def reloadMeetingConfigs(self, full=False):
+        '''Reload MeetingConfigs, either only portal_types related parameters,
+           or full reload (at_post_edit_script).'''
+        logger.info("Reloading every MeetingConfigs (full={0})...".format(repr(full)))
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            if full:
+                cfg.at_post_edit_script()
+            else:
+                cfg.registerPortalTypes()
+        logger.info('Done.')
+
+    def updateFacetedFilters(self, xml_filename=None, related_to="items", reorder=True, to_delete=[]):
+        """ """
+        logger.info("Updating faceted filters for every MeetingConfigs...")
+
+        if xml_filename:
+            xmlpath = os.path.join(
+                os.path.dirname(__file__),
+                '../faceted_conf/%s' % xml_filename)
+            logger.info("Applying faceted config at %s..." % xmlpath)
+
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            obj = None
+            if related_to == "items":
+                obj = cfg.searches.searches_items
+            elif related_to == "meetings":
+                obj = cfg.searches.searches_meetings
+            elif related_to == "decisions":
+                obj = cfg.searches.searches_decisions
+            # add/update faceted filters if xml_filename
+            if xml_filename:
+                obj.unrestrictedTraverse('@@faceted_exportimport').import_xml(
+                    import_file=open(xmlpath))
+            # delete criteria id given in to_delete
+            cleanRamCacheFor('Products.PloneMeeting.adapters.compute_criteria')
+            criteria = ICriteria(obj)
+            for cid in to_delete:
+                if cid in criteria.keys():
+                    logger.info("Removed criterion {0} from {1}".format(
+                        cid, repr(obj)))
+                    criteria.delete(cid)
+            # when criteria have been imported, if some were purged, we need to reorder
+            if reorder:
+                # sort by criterion name, so c0, c1, c2, ...
+                criteria._update(humansorted(criteria.values(), key=attrgetter('__name__')))
+        logger.info('Done.')
+
+    def changeCollectionIndex(self, old_index_name, new_index_name):
+        """Useful when an index name changed."""
+        for cfg in self.tool.objectValues('MeetingConfig'):
+            for brain in api.content.find(context=cfg.searches, portal_type='DashboardCollection'):
+                dc = brain.getObject()
+                query = dc.query
+                found = False
+                adapted_query = []
+                for line in query:
+                    adapted_line = line.copy()
+                    if adapted_line['i'] == old_index_name:
+                        found = True
+                        adapted_line['i'] = new_index_name
+                        logger.info("Replaced \"{0}\" by \"{1}\" in query of \"{2}\"".format(
+                            old_index_name, new_index_name, brain.getPath()))
+                    adapted_query.append(adapted_line)
+                if base_hasattr(dc, 'sort_on') and dc.sort_on == old_index_name:
+                    dc.sort_on = new_index_name
+                    logger.info("Replaced \"{0}\" by \"{1}\" in sort_on of \"{2}\"".format(
+                        old_index_name, new_index_name, brain.getPath()))
+                if found:
+                    dc.query = adapted_query
+                    dc._p_changed = True
+        logger.info('Done.')
+
+    def addCKEditorStyle(self, style_name, style_element, style_type="class", style_value=None):
+        """Helper for adding a new style to the CKeditor styles.
+           The rules:
+           - p_style_name may use "-" or "_";
+           - p_style_element is the tag name, so "p" or "span";
+           - the corresponding translation is "ckeditor_style_" +
+             style_name where "-" are replaced by "_";
+           - p_style_type is the type of style, by default "class", could be "style" also;
+           - p_style_value is the style value (class name or style definition)."""
+        logger.info("Adding style '%s' to CKEditor styles..." % style_name)
+        cke_props = self.portal.portal_properties.ckeditor_properties
+        if cke_props.menuStyles.find(style_name) == -1:
+            # msgid always starts with ckeditor_style_ and ends with style_name
+            msg_style_name = translate(
+                'ckeditor_style_{0}'.format(style_name),
+                domain='PloneMeeting',
+                context=self.request)
+            menuStyles = cke_props.menuStyles
+            style = u"{{ name : '{0}'\t\t, element : '{1}', attributes : " \
+                u"{{ '{2}' : '{3}' }} }},\n]".format(
+                    msg_style_name, style_element, style_type, style_value)
+            # last element, check if we need a ',' before or not...
+            strippedMenuStyles = menuStyles.replace(u' ', u'').replace(u'\n', u'').replace(u'\r', u'')
+            if u',]' not in strippedMenuStyles:
+                menuStyles = menuStyles.replace(u'\n]', u']')
+                style = u",\n" + style
+            menuStyles = menuStyles.replace(u']', style)
+            cke_props.menuStyles = menuStyles
+            self.warn(logger, "Style '{0}' was added...".format(style_name))
+        else:
+            logger.info("Style '{0}' already exists and was not added...".format(style_name))
+        logger.info('Done.')
+
+    def _already_migrated(self, done=True):
+        """Called when a migration is executed several times..."""
+        self.already_migrated = True
+        logger.info('Already migrated ...')
+        if done:
+            logger.info('Done.')
+
+    def _warnPortalSkinsCustom(self):
+        """Add a warning for each value found in portal_skins/custom."""
+        values = self.portal.portal_skins.custom.objectIds()
+        for value in values:
+            self.warn(logger, "\"%s\" was found in portal_skins/custom, still necessary?" % value)
+
+    def run(self):
+        '''Must be overridden. This method does the migration job.'''
+        raise 'You should have overridden me darling.'''
+
+    def finish(self):
+        '''At the end of the migration, you can call this method to log its
+           duration in minutes.'''
+        # set mailMode for every MeetingConfigs back to the right value
+        for cfgId in self.cfgsMailMode:
+            cfg = getattr(self.tool, cfgId)
+            cfg.setMailMode(self.cfgsMailMode[cfgId])
+        # set adviceInvalidation for every MeetingConfigs back to the right value
+        for cfgId in self.cfgsAdvicesInvalidation:
+            cfg = getattr(self.tool, cfgId)
+            cfg.setEnableAdviceInvalidation(self.cfgsAdvicesInvalidation[cfgId])
+        self._warnPortalSkinsCustom()
+        self.cleanRegistries()
+        self.tool.invalidateAllCache()
+        BaseMigrator.finish(self)
+        logger.info('======================================================================')
