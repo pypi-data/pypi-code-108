@@ -1,0 +1,645 @@
+﻿'''_5735.py
+
+GearHarmonicAnalysis
+'''
+
+
+from mastapy.system_model.part_model.gears import (
+    _2270, _2253, _2255, _2257,
+    _2258, _2259, _2261, _2263,
+    _2265, _2267, _2268, _2274,
+    _2276, _2278, _2280, _2283,
+    _2285, _2287, _2289, _2290,
+    _2291, _2293
+)
+from mastapy._internal import constructor
+from mastapy._internal.cast_exception import CastException
+from mastapy.system_model.analyses_and_results.system_deflections import (
+    _2496, _2431, _2438, _2439,
+    _2440, _2443, _2457, _2461,
+    _2480, _2481, _2482, _2485,
+    _2491, _2500, _2505, _2508,
+    _2511, _2544, _2550, _2553,
+    _2554, _2555, _2573, _2576
+)
+from mastapy.system_model.analyses_and_results.harmonic_analyses import _5764
+from mastapy._internal.python_net import python_net_import
+
+_GEAR_HARMONIC_ANALYSIS = python_net_import('SMT.MastaAPI.SystemModel.AnalysesAndResults.HarmonicAnalyses', 'GearHarmonicAnalysis')
+
+
+__docformat__ = 'restructuredtext en'
+__all__ = ('GearHarmonicAnalysis',)
+
+
+class GearHarmonicAnalysis(_5764.MountableComponentHarmonicAnalysis):
+    '''GearHarmonicAnalysis
+
+    This is a mastapy class.
+    '''
+
+    TYPE = _GEAR_HARMONIC_ANALYSIS
+
+    __hash__ = None
+
+    def __init__(self, instance_to_wrap: 'GearHarmonicAnalysis.TYPE'):
+        super().__init__(instance_to_wrap)
+        self._freeze()
+
+    @property
+    def component_design(self) -> '_2270.Gear':
+        '''Gear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2270.Gear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to Gear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_agma_gleason_conical_gear(self) -> '_2253.AGMAGleasonConicalGear':
+        '''AGMAGleasonConicalGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2253.AGMAGleasonConicalGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to AGMAGleasonConicalGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_bevel_differential_gear(self) -> '_2255.BevelDifferentialGear':
+        '''BevelDifferentialGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2255.BevelDifferentialGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to BevelDifferentialGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_bevel_differential_planet_gear(self) -> '_2257.BevelDifferentialPlanetGear':
+        '''BevelDifferentialPlanetGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2257.BevelDifferentialPlanetGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to BevelDifferentialPlanetGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_bevel_differential_sun_gear(self) -> '_2258.BevelDifferentialSunGear':
+        '''BevelDifferentialSunGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2258.BevelDifferentialSunGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to BevelDifferentialSunGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_bevel_gear(self) -> '_2259.BevelGear':
+        '''BevelGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2259.BevelGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to BevelGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_concept_gear(self) -> '_2261.ConceptGear':
+        '''ConceptGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2261.ConceptGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to ConceptGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_conical_gear(self) -> '_2263.ConicalGear':
+        '''ConicalGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2263.ConicalGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to ConicalGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_cylindrical_gear(self) -> '_2265.CylindricalGear':
+        '''CylindricalGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2265.CylindricalGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to CylindricalGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_cylindrical_planet_gear(self) -> '_2267.CylindricalPlanetGear':
+        '''CylindricalPlanetGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2267.CylindricalPlanetGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to CylindricalPlanetGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_face_gear(self) -> '_2268.FaceGear':
+        '''FaceGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2268.FaceGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to FaceGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_hypoid_gear(self) -> '_2274.HypoidGear':
+        '''HypoidGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2274.HypoidGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to HypoidGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_klingelnberg_cyclo_palloid_conical_gear(self) -> '_2276.KlingelnbergCycloPalloidConicalGear':
+        '''KlingelnbergCycloPalloidConicalGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2276.KlingelnbergCycloPalloidConicalGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to KlingelnbergCycloPalloidConicalGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_klingelnberg_cyclo_palloid_hypoid_gear(self) -> '_2278.KlingelnbergCycloPalloidHypoidGear':
+        '''KlingelnbergCycloPalloidHypoidGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2278.KlingelnbergCycloPalloidHypoidGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to KlingelnbergCycloPalloidHypoidGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_klingelnberg_cyclo_palloid_spiral_bevel_gear(self) -> '_2280.KlingelnbergCycloPalloidSpiralBevelGear':
+        '''KlingelnbergCycloPalloidSpiralBevelGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2280.KlingelnbergCycloPalloidSpiralBevelGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to KlingelnbergCycloPalloidSpiralBevelGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_spiral_bevel_gear(self) -> '_2283.SpiralBevelGear':
+        '''SpiralBevelGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2283.SpiralBevelGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to SpiralBevelGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_straight_bevel_diff_gear(self) -> '_2285.StraightBevelDiffGear':
+        '''StraightBevelDiffGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2285.StraightBevelDiffGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to StraightBevelDiffGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_straight_bevel_gear(self) -> '_2287.StraightBevelGear':
+        '''StraightBevelGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2287.StraightBevelGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to StraightBevelGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_straight_bevel_planet_gear(self) -> '_2289.StraightBevelPlanetGear':
+        '''StraightBevelPlanetGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2289.StraightBevelPlanetGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to StraightBevelPlanetGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_straight_bevel_sun_gear(self) -> '_2290.StraightBevelSunGear':
+        '''StraightBevelSunGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2290.StraightBevelSunGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to StraightBevelSunGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_worm_gear(self) -> '_2291.WormGear':
+        '''WormGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2291.WormGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to WormGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def component_design_of_type_zerol_bevel_gear(self) -> '_2293.ZerolBevelGear':
+        '''ZerolBevelGear: 'ComponentDesign' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2293.ZerolBevelGear.TYPE not in self.wrapped.ComponentDesign.__class__.__mro__:
+            raise CastException('Failed to cast component_design to ZerolBevelGear. Expected: {}.'.format(self.wrapped.ComponentDesign.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.ComponentDesign.__class__)(self.wrapped.ComponentDesign) if self.wrapped.ComponentDesign is not None else None
+
+    @property
+    def system_deflection_results(self) -> '_2496.GearSystemDeflection':
+        '''GearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2496.GearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to GearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_agma_gleason_conical_gear_system_deflection(self) -> '_2431.AGMAGleasonConicalGearSystemDeflection':
+        '''AGMAGleasonConicalGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2431.AGMAGleasonConicalGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to AGMAGleasonConicalGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_bevel_differential_gear_system_deflection(self) -> '_2438.BevelDifferentialGearSystemDeflection':
+        '''BevelDifferentialGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2438.BevelDifferentialGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to BevelDifferentialGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_bevel_differential_planet_gear_system_deflection(self) -> '_2439.BevelDifferentialPlanetGearSystemDeflection':
+        '''BevelDifferentialPlanetGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2439.BevelDifferentialPlanetGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to BevelDifferentialPlanetGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_bevel_differential_sun_gear_system_deflection(self) -> '_2440.BevelDifferentialSunGearSystemDeflection':
+        '''BevelDifferentialSunGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2440.BevelDifferentialSunGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to BevelDifferentialSunGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_bevel_gear_system_deflection(self) -> '_2443.BevelGearSystemDeflection':
+        '''BevelGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2443.BevelGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to BevelGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_concept_gear_system_deflection(self) -> '_2457.ConceptGearSystemDeflection':
+        '''ConceptGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2457.ConceptGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to ConceptGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_conical_gear_system_deflection(self) -> '_2461.ConicalGearSystemDeflection':
+        '''ConicalGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2461.ConicalGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to ConicalGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_cylindrical_gear_system_deflection(self) -> '_2480.CylindricalGearSystemDeflection':
+        '''CylindricalGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2480.CylindricalGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to CylindricalGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_cylindrical_gear_system_deflection_timestep(self) -> '_2481.CylindricalGearSystemDeflectionTimestep':
+        '''CylindricalGearSystemDeflectionTimestep: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2481.CylindricalGearSystemDeflectionTimestep.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to CylindricalGearSystemDeflectionTimestep. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_cylindrical_gear_system_deflection_with_ltca_results(self) -> '_2482.CylindricalGearSystemDeflectionWithLTCAResults':
+        '''CylindricalGearSystemDeflectionWithLTCAResults: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2482.CylindricalGearSystemDeflectionWithLTCAResults.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to CylindricalGearSystemDeflectionWithLTCAResults. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_cylindrical_planet_gear_system_deflection(self) -> '_2485.CylindricalPlanetGearSystemDeflection':
+        '''CylindricalPlanetGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2485.CylindricalPlanetGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to CylindricalPlanetGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_face_gear_system_deflection(self) -> '_2491.FaceGearSystemDeflection':
+        '''FaceGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2491.FaceGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to FaceGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_hypoid_gear_system_deflection(self) -> '_2500.HypoidGearSystemDeflection':
+        '''HypoidGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2500.HypoidGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to HypoidGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_klingelnberg_cyclo_palloid_conical_gear_system_deflection(self) -> '_2505.KlingelnbergCycloPalloidConicalGearSystemDeflection':
+        '''KlingelnbergCycloPalloidConicalGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2505.KlingelnbergCycloPalloidConicalGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to KlingelnbergCycloPalloidConicalGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_klingelnberg_cyclo_palloid_hypoid_gear_system_deflection(self) -> '_2508.KlingelnbergCycloPalloidHypoidGearSystemDeflection':
+        '''KlingelnbergCycloPalloidHypoidGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2508.KlingelnbergCycloPalloidHypoidGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to KlingelnbergCycloPalloidHypoidGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_klingelnberg_cyclo_palloid_spiral_bevel_gear_system_deflection(self) -> '_2511.KlingelnbergCycloPalloidSpiralBevelGearSystemDeflection':
+        '''KlingelnbergCycloPalloidSpiralBevelGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2511.KlingelnbergCycloPalloidSpiralBevelGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to KlingelnbergCycloPalloidSpiralBevelGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_spiral_bevel_gear_system_deflection(self) -> '_2544.SpiralBevelGearSystemDeflection':
+        '''SpiralBevelGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2544.SpiralBevelGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to SpiralBevelGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_straight_bevel_diff_gear_system_deflection(self) -> '_2550.StraightBevelDiffGearSystemDeflection':
+        '''StraightBevelDiffGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2550.StraightBevelDiffGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to StraightBevelDiffGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_straight_bevel_gear_system_deflection(self) -> '_2553.StraightBevelGearSystemDeflection':
+        '''StraightBevelGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2553.StraightBevelGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to StraightBevelGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_straight_bevel_planet_gear_system_deflection(self) -> '_2554.StraightBevelPlanetGearSystemDeflection':
+        '''StraightBevelPlanetGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2554.StraightBevelPlanetGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to StraightBevelPlanetGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_straight_bevel_sun_gear_system_deflection(self) -> '_2555.StraightBevelSunGearSystemDeflection':
+        '''StraightBevelSunGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2555.StraightBevelSunGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to StraightBevelSunGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_worm_gear_system_deflection(self) -> '_2573.WormGearSystemDeflection':
+        '''WormGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2573.WormGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to WormGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
+
+    @property
+    def system_deflection_results_of_type_zerol_bevel_gear_system_deflection(self) -> '_2576.ZerolBevelGearSystemDeflection':
+        '''ZerolBevelGearSystemDeflection: 'SystemDeflectionResults' is the original name of this property.
+
+        Note:
+            This property is readonly.
+        '''
+
+        if _2576.ZerolBevelGearSystemDeflection.TYPE not in self.wrapped.SystemDeflectionResults.__class__.__mro__:
+            raise CastException('Failed to cast system_deflection_results to ZerolBevelGearSystemDeflection. Expected: {}.'.format(self.wrapped.SystemDeflectionResults.__class__.__qualname__))
+
+        return constructor.new_override(self.wrapped.SystemDeflectionResults.__class__)(self.wrapped.SystemDeflectionResults) if self.wrapped.SystemDeflectionResults is not None else None
