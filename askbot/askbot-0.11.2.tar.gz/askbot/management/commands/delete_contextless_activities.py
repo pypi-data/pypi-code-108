@@ -1,0 +1,24 @@
+
+from django.core.management import BaseCommand
+from askbot.utils.console import ProgressBar
+from askbot.models import Activity
+from askbot import const
+
+class Command(BaseCommand):
+    def handle(self, **options):
+        acts = Activity.objects.all()
+        deleted_count = 0
+        message = "Searching for context-less activity objects:"
+        for act in ProgressBar(acts.iterator(), acts.count(), message):
+            try:
+                if act.object_id != None and act.content_object == None:
+                    act.delete()
+                    deleted_count += 1
+            except:
+                #this can happen if we have a stale content type
+                act.delete()
+
+        if deleted_count:
+            print("%d activity objects deleted" % deleted_count)
+        else:
+            print("None found")
