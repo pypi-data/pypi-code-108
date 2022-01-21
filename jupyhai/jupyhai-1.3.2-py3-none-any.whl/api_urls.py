@@ -1,0 +1,6 @@
+ENVIRONMENTS_URL = '/api/v0/environments/'
+EXECUTIONS_URL = '/api/v0/executions/'
+LOGIN_LINK_URL = '/api/v0/users/login_link/'
+ME_URL = '/api/v0/users/me/'
+PROJECTS_URL = '/api/v0/projects/'
+SERVER_INFO_URL = '/api/v0/server/'
