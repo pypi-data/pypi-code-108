@@ -1,0 +1,267 @@
+from . import defs
+from .exceptions import UsbIssError
+from .driver import Driver, DummyDriver
+from .i2c import I2C
+from .io import IO
+from .spi import SPI
+from .serial_ import Serial
+
+
+class UsbIss(object):
+    """
+    Main object used to interact with the USB_ISS device.
+
+    Example:
+        ::
+
+            from usb_iss import UsbIss, defs
+
+            # Configure I2C mode
+
+            iss = UsbIss()
+            iss.open("COM3")
+            iss.setup_i2c()
+
+            # Write and read back some data
+            # NOTE: I2C methods use 7-bit device addresses (0x00 - 0x7F)
+
+            iss.i2c.write(0x62, 0, [0, 1, 2]);
+            data = iss.i2c.read(0x62, 0, 3)
+
+            print(data)
+            # [0, 1, 2]
+
+    Args:
+        dummy (bool): Use a dummy driver stub, for testing.
+        verbose (bool): Print debug output to the console.
+
+    Attributes:
+        i2c (:class:`i2c.I2C`): Attribute to use for I2C access. See
+            :class:`i2c.I2C` for the full set of I2C methods.
+        io (:class:`io.IO`): Attribute to use for pin IO access. See
+            :class:`io.IO` for the full set of IO methods.
+        spi (:class:`spi.SPI`): Attribute to use for SPI access. See
+            :class:`spi.SPI` for the full set of SPI methods.
+        serial (:class:`serial_.Serial`): Attribute to use for Serial UART
+            access. See :class:`serial_.Serial` for the full set of Serial
+            methods.
+
+    """
+    def __init__(self, dummy=False, verbose=False):
+        self._drv = DummyDriver() if dummy else Driver(verbose)
+
+        self.i2c = I2C(self._drv)
+        self.io = IO(self._drv)
+        self.spi = SPI(self._drv)
+        self.serial = Serial(self._drv)
+
+        self.current_io_type = 0xAA  # Everything digital input by default
+
+    def open(self, port):
+        """
+        Open the specified serial port for communication with the USB_ISS
+        module.
+
+        Args:
+            port (str): Serial port to use for usb_iss communication.
+        """
+        self._drv.open(port)
+        return self
+
+    def close(self):
+        """
+        Close the serial port.
+        """
+        self._drv.close()
+
+    def setup_i2c(self, clock_khz=400, use_i2c_hardware=True,
+                  io1_type=None,
+                  io2_type=None):
+        """
+        Issue an ISS_MODE command to set the operating mode to I2C + IO.
+
+        Args:
+            clock_khz (int): I2C clock rate in kHz.
+                See https://www.robot-electronics.co.uk/htm/usb_iss_tech.htm
+                for a list of valid values.
+            use_i2c_hardware (bool): Use the USB_ISS module's hardware I2C
+                controller.
+            io1_type (defs.IOType): IO1 mode (or None for no change)
+            io2_type (defs.IOType): IO2 mode (or None for no change)
+        """
+        i2c_mode = self._get_i2c_mode(clock_khz, use_i2c_hardware)
+        io_type = self._get_io_type(io1_type, io2_type, None, None)
+        self._set_mode(i2c_mode, [io_type & 0x0F])
+        self.current_io_type = io_type
+
+    def setup_i2c_serial(self, clock_khz=400, use_i2c_hardware=True,
+                         baud_rate=9600):
+        """
+        Issue an ISS_MODE command to set the operating mode to I2C + Serial.
+
+        Args:
+            clock_khz (int): I2C clock rate in kHz.
+                See https://www.robot-electronics.co.uk/htm/usb_iss_tech.htm
+                for a list of valid values.
+            use_i2c_hardware (bool): Use the USB_ISS module's hardware I2C
+                controller.
+            baud_rate (int): Baud rate for the serial interface.
+        """
+        i2c_mode = self._get_i2c_mode(clock_khz, use_i2c_hardware)
+        divisor = self._get_serial_divisor(baud_rate)
+        self._set_mode(i2c_mode | defs.Mode.SERIAL.value, divisor)
+
+    def setup_spi(self, spi_mode=defs.SPIMode.TX_ACTIVE_TO_IDLE_IDLE_LOW,
+                  clock_khz=500):
+        """
+        Issue an ISS_MODE command to set the operating mode to SPI.
+
+        Args:
+            spi_mode (defs.SPIMode): SPI mode option to use.
+            clock_khz (int): SPI clock rate in kHz.
+        """
+        divisor = self._get_spi_divisor(clock_khz)
+        self._set_mode(spi_mode.value, [divisor])
+
+    def setup_io(self,
+                 io1_type=None,
+                 io2_type=None,
+                 io3_type=None,
+                 io4_type=None):
+        """
+        Issue an ISS_MODE command to set the operating mode to IO.
+
+        Args:
+            io1_type (defs.IOType): IO1 mode (or None for no change)
+            io2_type (defs.IOType): IO2 mode (or None for no change)
+            io3_type (defs.IOType): IO3 mode (or None for no change)
+            io4_type (defs.IOType): IO4 mode (or None for no change)
+        """
+        io_type = self._get_io_type(io1_type, io2_type, io3_type, io4_type)
+        self._set_mode(defs.Mode.IO_MODE.value, [io_type])
+        self.current_io_type = io_type
+
+    def change_io(self,
+                  io1_type=None,
+                  io2_type=None,
+                  io3_type=None,
+                  io4_type=None):
+        """
+        Issue an ISS_MODE command to change the current IO mode without
+        affecting serial or I2C settings.
+
+        Args:
+            io1_type (defs.IOType): IO1 mode (or None for no change)
+            io2_type (defs.IOType): IO2 mode (or None for no change)
+            io3_type (defs.IOType): IO3 mode (or None for no change)
+            io4_type (defs.IOType): IO4 mode (or None for no change)
+        """
+        io_type = self._get_io_type(io1_type, io2_type, io3_type, io4_type)
+        self._set_mode(defs.Mode.IO_CHANGE.value, [io_type])
+        self.current_io_type = io_type
+
+    def setup_serial(self, baud_rate=9600,
+                     io3_type=None,
+                     io4_type=None):
+        """
+        Issue an ISS_MODE command to set the operating mode to Serial + IO.
+
+        Args:
+            baud_rate (int): Baud rate for the serial interface.
+            io3_type (defs.IOType): IO3 mode (or None for no change)
+            io4_type (defs.IOType): IO4 mode (or None for no change)
+        """
+        divisor = self._get_serial_divisor(baud_rate)
+        io_type = self._get_io_type(None, None, io3_type, io4_type)
+        self._set_mode(defs.Mode.SERIAL.value, divisor + [io_type & 0xF0])
+        self.current_io_type = io_type
+
+    def read_module_id(self):
+        """
+        Returns:
+            int: The USB_ISS module ID (always 7).
+        """
+        self._drv.write_cmd(defs.Command.USB_ISS.value,
+                            [defs.SubCommand.ISS_VERSION.value])
+        return self._drv.read(3)[0]
+
+    def read_fw_version(self):
+        """
+        Returns:
+            int: The USB_ISS firmware version.
+        """
+        self._drv.write_cmd(defs.Command.USB_ISS.value,
+                            [defs.SubCommand.ISS_VERSION.value])
+        return self._drv.read(3)[1]
+
+    def read_iss_mode(self):
+        """
+        Returns:
+            defs.Mode: The current ISS_MODE operating mode.
+        """
+        self._drv.write_cmd(defs.Command.USB_ISS.value,
+                            [defs.SubCommand.ISS_VERSION.value])
+        return defs.Mode(self._drv.read(3)[2])
+
+    def read_serial_number(self):
+        """
+        Returns:
+            str: The serial number of the attached USB_ISS module.
+        """
+        self._drv.write_cmd(defs.Command.USB_ISS.value,
+                            [defs.SubCommand.GET_SER_NUM.value])
+        data = self._drv.read(8)
+        return ''.join([chr(byte) for byte in data])
+
+    def _set_mode(self, mode_value, data):
+        data = [defs.SubCommand.ISS_MODE.value, mode_value] + data
+        self._drv.write_cmd(defs.Command.USB_ISS.value, data)
+        self._drv.check_ack_error_code(defs.ModeError)
+
+    def _get_io_type(self, io1_type, io2_type, io3_type, io4_type):
+        new_io_type = self.current_io_type
+
+        if io1_type is not None:
+            new_io_type = (new_io_type & 0xFC) | (io1_type.value << 0)
+        if io2_type is not None:
+            new_io_type = (new_io_type & 0xF3) | (io2_type.value << 2)
+        if io3_type is not None:
+            new_io_type = (new_io_type & 0xCF) | (io3_type.value << 4)
+        if io4_type is not None:
+            new_io_type = (new_io_type & 0x3F) | (io4_type.value << 6)
+
+        return new_io_type
+
+    @staticmethod
+    def _get_i2c_mode(clock_khz, use_i2c_hardware):
+        if clock_khz == 20:
+            assert not use_i2c_hardware, "I2C HW mode doesn't support 20kHz"
+            return defs.Mode.I2C_S_20KHZ.value
+        if clock_khz == 50:
+            assert not use_i2c_hardware, "I2C HW mode doesn't support 50kHz"
+            return defs.Mode.I2C_S_50KHZ.value
+        if clock_khz == 100:
+            return (defs.Mode.I2C_H_100KHZ.value if use_i2c_hardware else
+                    defs.Mode.I2C_S_100KHZ.value)
+        if clock_khz == 400:
+            return (defs.Mode.I2C_H_400KHZ.value if use_i2c_hardware else
+                    defs.Mode.I2C_S_400KHZ.value)
+        if clock_khz == 1000:
+            assert use_i2c_hardware, "I2C SW mode doesn't support 1000kHz"
+            return defs.Mode.I2C_H_1000KHZ.value
+
+        raise UsbIssError("Invalid clk_khz value")
+
+    @staticmethod
+    def _get_serial_divisor(baud_rate):
+        divisor = (48000000 // (16 * baud_rate)) - 1
+        divisor = max(divisor, 0)
+        divisor = min(divisor, 0xFFFF)
+        return [divisor >> 8, divisor & 0xFF]
+
+    @staticmethod
+    def _get_spi_divisor(clock_khz):
+        divisor = (6000 // clock_khz) - 1
+        divisor = max(divisor, 0)
+        divisor = min(divisor, 0xFF)
+        return divisor
