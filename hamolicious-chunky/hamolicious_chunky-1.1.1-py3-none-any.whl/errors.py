@@ -1,0 +1,3 @@
+
+class DidntReturnChunk(Exception):
+	pass
