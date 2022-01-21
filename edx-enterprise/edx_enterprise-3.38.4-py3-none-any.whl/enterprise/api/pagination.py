@@ -1,0 +1,45 @@
+"""
+Pagination helpers for enterprise api.
+"""
+
+from collections import OrderedDict
+from urllib.parse import urlparse
+
+from rest_framework.response import Response
+
+
+def get_paginated_response(data, request):
+    """
+    Update pagination links in course catalog data and return DRF Response.
+
+    Arguments:
+        data (dict): Dictionary containing catalog courses.
+        request (HttpRequest): Current request object.
+
+    Returns:
+        (Response): DRF response object containing pagination links.
+    """
+    url = urlparse(request.build_absolute_uri())._replace(query=None).geturl()
+
+    next_page = None
+    previous_page = None
+
+    if data['next']:
+        next_page = "{base_url}?{query_parameters}".format(
+            base_url=url,
+            query_parameters=urlparse(data['next']).query,
+        )
+        next_page = next_page.rstrip('?')
+    if data['previous']:
+        previous_page = "{base_url}?{query_parameters}".format(
+            base_url=url,
+            query_parameters=urlparse(data['previous'] or "").query,
+        )
+        previous_page = previous_page.rstrip('?')
+
+    return Response(OrderedDict([
+        ('count', data['count']),
+        ('next', next_page),
+        ('previous', previous_page),
+        ('results', data['results'])
+    ]))
