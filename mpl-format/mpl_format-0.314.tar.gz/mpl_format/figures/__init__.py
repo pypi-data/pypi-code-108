@@ -1,0 +1,1 @@
+from mpl_format.figures.figure_formatter import FigureFormatter
