@@ -1,0 +1,41 @@
+# API SETTINGS
+
+API_URL = "https://api.rohub.org/api/"
+
+# KEYCLOAK SETTING
+
+KEYCLOAK_CLIENT_ID = "rohub2020-public-cli"
+KEYCLOAK_URL = "https://login.rohub.org/auth/realms/rohub/protocol/openid-connect/token"
+KEYCLOAK_CLIENT_SECRET = None
+
+# USER SETTINGS
+
+USERNAME = None
+PASSWORD = None
+GRANT_TYPE = "password"
+
+# TOKEN SETTINGS
+
+ACCESS_TOKEN = None
+ACCESS_TOKEN_VALID_TO = None
+REFRESH_TOKEN = None
+REFRESH_TOKEN_VALID_TO = None
+TOKEN_TYPE = None
+SESSION_STATE = None
+
+# REQUESTS SETTINGS
+
+TIMEOUT = 100
+RETRIES = 30
+SLEEP_TIME = 2
+
+# ENDPOINTS SETTINGS
+
+EXPORT_TO_ROCRATE_DEFAULT_FORMAT = "json-ld"
+
+# AUXILIARY METHODS SETTINGS
+
+ZENODO_FUNDERS_URL = "https://zenodo.org/api/funders/"
+ZENODO_GRANTS_URL = "https://zenodo.org/api/grants/"
+ZENODO_GRANT_RESULTS_DEFAULT = int(10)
+ZENODO_FUNDER_RESULTS_DEFAULT = int(10)
