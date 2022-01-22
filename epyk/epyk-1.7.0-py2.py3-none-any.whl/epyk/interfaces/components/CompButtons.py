@@ -1,0 +1,1523 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+import os
+from typing import Union, Optional
+
+from epyk.core import html
+from epyk.core.html import Defaults_html
+from epyk.interfaces import Arguments
+
+
+COLOR_EXPR = "1px solid {}"
+
+
+class Buttons:
+
+  def __init__(self, ui):
+    self.page = ui.page
+
+  @staticmethod
+  def __align(component, align: str):
+    """
+    Description:
+    ------------
+    Set the component align in the page.
+
+    Attributes:
+    ----------
+    :param component: HTML component. The component to be aligned in the page.
+    :param align: String. The text-align property within this component.
+    """
+    if align == "center":
+      component.style.css.margin = "auto"
+      component.style.css.display = "block"
+    elif align == "right":
+      component.style.css.float = "right"
+
+  def __set_color(self, component, color: Union[str, bool]):
+    """
+    Description:
+    ------------
+    Set the background color for the button.
+    By default it will use the theme's color.
+
+    Attributes:
+    ----------
+    :param component: The component to be aligned in the page.
+    :param str color: The color to set.
+    """
+    if color is True:
+      component.style.css.background = self.page.theme.notch(4)
+      component.style.css.border = COLOR_EXPR.format(self.page.theme.colors[-1])
+      component.style.css.color = self.page.theme.colors[0]
+    else:
+      component.style.css.background = color
+      component.style.css.border = color
+      component.style.css.color = self.page.theme.colors[0]
+
+  def button(self, text: str = "", icon: Optional[Union[str, bool]] = None, width: Union[tuple, int] = (None, "%"),
+             height: Union[tuple, int] = (None, "px"), align: str = "left", html_code: Optional[str] = None,
+             tooltip: Optional[str] = None, profile: Optional[Union[dict, bool]] = None,
+             options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Standard button.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.button("Test")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/alerts.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_link.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param str text: Optional. The value to be displayed to the button.
+    :param Union[tuple, int] width: Optional. A tuple with the integer for the component width and its unit.
+    :param Union[tuple, int] height: Optional. A tuple with the integer for the component height and its unit.
+    :param str align: Optional. A string with the horizontal position of the component.
+    :param Optional[Union[str, bool]] icon: Optional. A string with the value of the icon to display from font-awesome.
+    :param Optional[str] html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param Optional[str] tooltip: Optional. A string with the value of the tooltip.
+    :param Optional[Union[dict, bool]] profile: Optional. A flag to set the component performance storage.
+    :param Optional[dict] options: Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    text = self.page.py.encode_html(text)
+    component = html.HtmlButton.Button(
+      self.page, text, icon, width, height, html_code=html_code, tooltip=tooltip, profile=profile, options=options)
+    if options is not None and options.get("colored", False):
+      self.__set_color(component, options["colored"])
+    component.style.css.margin = "0"
+    component.style.css.padding = 0
+    component.style.css.padding_h = 5
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def colored(self, text: str = "", icon: Optional[Union[str, bool]] = None, color: Optional[str] = None,
+              width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"), align: str = "left",
+              html_code: Optional[str] = None, tooltip: Optional[str] = None, profile: Union[dict, bool] = None,
+              options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Standard colored button.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.colored("Test")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/alerts.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_link.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param color: String. Optional. The font color in the component. Default inherit.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    dft_options = {"colored": color or True}
+    if options is not None:
+      dft_options.update(options)
+    component = self.button(text, icon, width, height, align, html_code, tooltip, profile, dft_options)
+    component.style.css.margin_top = 5
+    component.style.css.margin_bottom = 5
+    component.style.css.padding_left = 10
+    component.style.css.padding_right = 10
+    html.Html.set_component_skin(component)
+    return component
+
+  def clear(self, text: str = "", icon: Optional[Union[str, bool]] = "fas fa-eraser", color: Optional[str] = None,
+            width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+            align: str = "left", html_code: Optional[str] = None, tooltip: Optional[str] = None,
+            profile: Union[dict, bool] = None, options: Union[dict] = None):
+    """
+    Description:
+    ------------
+    Standard clear button with a font-awesome icon.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.clear("Clear")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/alerts.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_link.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param color: String. Optional. The font color in the component. Default inherit.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    component = self.button(text, icon, width, height, align, html_code, tooltip, profile, options)
+    component.style.css.background = color or self.page.theme.danger[-1]
+    component.style.css.border = COLOR_EXPR.format(color or self.page.theme.danger[-1])
+    component.style.css.color = self.page.theme.colors[0]
+    component.style.css.margin_top = 5
+    component.style.css.margin_bottom = 5
+    component.style.hover({"background-color": "%s !IMPORTANT" % self.page.theme.danger[0]})
+    html.Html.set_component_skin(component)
+    return component
+
+  def large(self, text: str = "", icon: Optional[Union[str, bool]] = None, width: Union[tuple, int] = (None, "%"),
+            height: Union[tuple, int] = (None, "px"), align: str = "left", html_code: Optional[str] = None,
+            tooltip: Optional[str] = None, profile: Union[dict, bool] = None, options: Union[dict] = None):
+    """
+    Description:
+    ------------
+    Large button.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.large("Test")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/alerts.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_link.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. The integer for the component width and its unit.
+    :param height: Tuple. Optional. The integer for the component height and its unit.
+    :param align: String. Optional. The horizontal position of the component.
+    :param icon: String. Optional. The value of the icon to display from font-awesome.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. The value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    text = self.page.py.encode_html(text)
+    component = html.HtmlButton.Button(self.page, text, icon, width, height, html_code=html_code,
+                                       tooltip=tooltip, profile=profile, options=options)
+    self.__align(component, align)
+    if options is not None and options.get("colored", False):
+      self.__set_color(component, options["colored"])
+    html.Html.set_component_skin(component)
+    return component
+
+  def absolute(self, text: str, size_notch=None, icon: Optional[Union[str, bool]] = "", top=(50, "%"), left=(50, "%"),
+               bottom=None, width: Union[tuple, int] = ('auto', ""),
+               height: Union[tuple, int] = (None, "px"), html_code: Optional[str] = None,
+               options: Optional[dict] = None, profile: Union[dict, bool] = None):
+    """
+    Description:
+    ------------
+    Display a button on the page regardless the current layout of components.
+    By default the button will be center on the page.
+
+    :tags:
+    :categories:
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Usage::
+
+      page.ui.buttons.absolute("Test")
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param size_notch: Integer. Optional. A value to be added to the number font size.
+    :param bottom: Integer. Optional. The position of the component.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param top: Tuple. Optional. A tuple with the integer for the component's distance to the top of the page.
+    :param left: Tuple. Optional. A tuple with the integer for the component's distance to the left of the page.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    """
+    left = Arguments.size(left, unit="%")
+    top = Arguments.size(top, unit="%")
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(self.page, text, icon, width, height, html_code=html_code,
+                                       tooltip=None, profile=profile, options=options)
+    component.style.position = "absolute"
+    component.style.display = "block"
+    if bottom is not None:
+      component.style.bottom = "%s%s" % (bottom[0], bottom[1])
+    else:
+      component.style.top = "%s%s" % (top[0], top[1])
+    component.style.left = "%s%s" % (left[0], left[1])
+    component.style.transform = "translate(-%s, -%s)" % (component.style.left, component.style.top)
+    if size_notch is not None:
+      component.style.font_size = self.page.body.style.globals.font.normal(size_notch)
+    if width[0] == 'auto':
+      component.style.css.display = "inline-block"
+    html.Html.set_component_skin(component)
+    return component
+
+  def small(self, text: str = "", icon: Optional[Union[str, bool]] = None, width: Union[tuple, int] = (None, "%"),
+            height: Union[tuple, int] = (None, "px"), align: str = "left", html_code: Optional[str] = None,
+            tooltip=None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Standard button with a small layout.
+
+    :tags:
+    :categories:
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Usage::
+
+      page.ui.buttons.small("Small button")
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(self.page, text, icon, width, height, html_code=html_code,
+                                       tooltip=tooltip, profile=profile, options=options)
+    component.style.css.line_height = 12
+    component.style.css.padding = 2
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def normal(self, text: str = "", icon: Optional[Union[str, bool]] = None, width: Union[tuple, int] = (None, "%"),
+             height: Union[tuple, int] = (None, "px"), align: str = "left", html_code: Optional[str] = None,
+             tooltip: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Standard button with a standard layout.
+
+    :tags:
+    :categories:
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Usage::
+
+      page.ui.buttons.normal("Standard button")
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(self.page, text, icon, width, height, html_code=html_code,
+                                       tooltip=tooltip, profile=profile, options=options)
+    component.style.css.line_height = 18
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def important(self, text: str = "", icon: Optional[Union[str, bool]] = None, width: Union[tuple, int] = (None, "%"),
+                height: Union[tuple, int] = (None, "px"), align: str = "left", html_code: Optional[str] = None,
+                tooltip: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Same as Standard button but used to attract user attention.
+
+    :tags:
+    :categories:
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Usage::
+
+      page.ui.buttons.important("Important")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(self.page, text, icon, width, height, html_code=html_code,
+                                       tooltip=tooltip, profile=profile, options=options)
+    component.style.add_classes.button.important()
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def validate(self, text: str = "", width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+               html_code: Optional[str] = None, align: str = "left", tooltip: Optional[str] = None,
+               profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Add a validate button with a predefined icon from font awesome.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.validate("Validate")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param align: String. Optional. The text-align property within this component.
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    options = options or {}
+    component = html.HtmlButton.Button(self.page, text, 'fas fa-check-circle', width, height,
+                                       html_code=html_code, tooltip=tooltip, profile=profile, options=options)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def run(self, text: str = "", width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+          align: str = "left", html_code: Optional[str] = None, tooltip: Optional[str] = None,
+          profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Add a run button with a predefined icon from font awesome.
+
+    :tags:
+    :categories:
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Usage::
+
+      page.ui.buttons.run("Run")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. The text-align property within this component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    options = options or {}
+    component = html.HtmlButton.Button(self.page, text, 'fas fa-play', width, height, html_code=html_code,
+                                       tooltip=tooltip, profile=profile, options=options)
+    if options.get("colored"):
+      component.style.css.background = self.page.theme.colors[-1]
+      component.style.css.border = COLOR_EXPR.format(self.page.theme.colors[-1])
+      component.style.css.color = self.page.theme.colors[0]
+      component.style.css.margin_top = 5
+      component.style.css.margin_bottom = 5
+    if align == "center":
+      component.style.css.margin = "auto"
+      component.style.css.display = "block"
+    else:
+      component.style.css.margin = 0
+      component.style.css.padding = "0 20px"
+      component.style.css.display = "inline-block"
+      component.style.css.line_height = Defaults_html.LINE_HEIGHT
+    html.Html.set_component_skin(component)
+    return component
+
+  def remove(self, text: str = "", width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+             html_code: Optional[str] = None, align: str = "left", tooltip: Optional[str] = None,
+             profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Button with cross icon.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.remove("Remove")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    dflt_options = {"category": "delete"}
+    if options is not None:
+      dflt_options.update(options)
+    component = html.HtmlButton.Button(self.page, text, 'fas fa-trash-alt', width, height,
+                                       html_code=html_code, tooltip=tooltip, profile=profile, options=dflt_options)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def cancel(self, text: str = "Cancel", width: Union[tuple, int] = (None, "%"),
+             height: Union[tuple, int] = (None, "px"), html_code: Optional[str] = None, align: str = "left",
+             tooltip: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Button with cross icon to cancellation actions.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.cancel("Cancel")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param align: String. Optional. The text-align property within this component.
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    dflt_options = {"category": "delete"}
+    if options is not None:
+      dflt_options.update(options)
+    component = html.HtmlButton.Button(self.page, text, 'fas fa-window-close', width, height,
+                                       html_code=html_code, tooltip=tooltip, profile=profile, options=dflt_options)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def phone(self, text: str = "", width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+            html_code: Optional[str] = None, align: str = "left", tooltip: Optional[str] = None,
+            profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Add a phone button with a predefined icon from font-awesome.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.phone()
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(self.page, text, 'fas fa-phone', width, height, html_code=html_code,
+                                         tooltip=tooltip, profile=profile, options=options)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def mail(self, text: str = "", width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+           html_code: Optional[str] = None, align: str = "left", tooltip=None,
+           profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Add a mail button with a predefined icon from font-awesome.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.mail()
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(self.page, text, 'fas fa-envelope', width, height, html_code=html_code,
+                                       tooltip=tooltip, profile=profile, options=options)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def radio(self, record=None, html_code: Optional[str] = None, group_name: Optional[str] = None,
+            width: Union[tuple, int] = (100, '%'), height: Union[tuple, int] = (None, "px"), align: str = 'left',
+            options: Optional[dict] = None, profile: Union[dict, bool] = None):
+    """
+    Description:
+    ------------
+    Creates a radio HTML component.
+
+    Tips: record data should be in the format expected by the component. If needed a data helper can be used.
+    from the data package in the component property, the various functions available for the radio will help.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.radio(df, dfColumn="A", htmlCode="test")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlRadio.Radio`
+
+    Related Pages:
+
+      https://www.w3schools.com/bootstrap/bootstrap_forms_inputs.asp
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param record: List of dict. The Python list of dictionaries.
+    :param group_name: String. Optional.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlRadio.Radio(
+      self.page, record or [], html_code, group_name, width, height, options or {}, profile)
+    for c in component:
+      c.style.css.display = "inline-block"
+      c.style.css.margin = "0 2px"
+      c.style.css.padding = "0 2px"
+    component.style.css.text_align = align
+    html.Html.set_component_skin(component)
+    return component
+
+  def toggle(self, record=None, label: Optional[str] = None, color: Optional[str] = None,
+             width: Union[tuple, int] = (None, '%'), height: Union[tuple, int] = (None, 'px'), align: str = "left",
+             html_code: Optional[str] = None, options: Optional[dict] = None, profile: Union[dict, bool] = None):
+    """
+    Description:
+    ------------
+    Add a toggle component.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.toggle({'on': "true", 'off': 'false'})
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlRadio.Switch`
+
+    Related Pages:
+
+      http://thecodeplayer.com/walkthrough/pure-css-on-off-toggle-switch
+      https://codepen.io/mburnette/pen/LxNxNg
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/switch.py
+
+    Attributes:
+    ----------
+    :param record: List. Optional. The list of dictionaries with the data.
+    :param label: String. Optional. The toggle static label displayed.
+    :param color: String. Optional. String. Optional. The font color in the component. Default inherit.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    """
+    record = record or {"off": "Off", "on": "On"}
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    if height[0] is None:
+      height = (Defaults_html.LINE_HEIGHT, height[1])
+    html_toggle = html.HtmlRadio.Switch(self.page, record, color, width, height, html_code, options or {}, profile)
+    if label is not None:
+      label = self.page.ui.texts.label(label, options=options, html_code="%s_label" % html_toggle.htmlCode)
+      html_toggle.style.css.display = "inline-block"
+      html_toggle.style.css.padding_top = 2
+      component = self.page.ui.div([label, html_toggle], width=width)
+      component.label = label
+    else:
+      component = self.page.ui.div([html_toggle], width=width)
+    component.input = html_toggle
+    html.Html.set_component_skin(component)
+    return component
+
+  def checkboxes(self, record=None, color: Optional[str] = None, width: Union[tuple, int] = (100, "%"),
+                 height: Union[tuple, int] = (None, "px"), align: str = 'left',
+                 html_code: Optional[str] = None, tooltip: Optional[str] = '', options: Optional[dict] = None,
+                 profile: Union[dict, bool] = None):
+    """
+    Description:
+    ------------
+    Python wrapper to the HTML checkbox elements.
+
+    Tips: record data should be in the format expected by the component. If needed a data helper can be used.
+    from the data package in the component property, the various functions available for the checkboxes will help.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.checkboxes(data)
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Checkbox`
+
+    Related Pages:
+
+      https://www.w3schools.com/howto/howto_css_custom_checkbox.asp
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_checkboxes.py
+
+    Attributes:
+    ----------
+    :param record: List. Optional. The list of dictionaries with the data.
+    :param color: String. Optional. The color code.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. The text-align property within this component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Checkbox(
+      self.page, record or [], color, width, height, align, html_code, tooltip, options or {}, profile)
+    html.Html.set_component_skin(component)
+    return component
+
+  def check(self, flag: bool = False, tooltip: Optional[str] = None, width: Union[tuple, int] = (None, "px"),
+            height: Union[tuple, int] = (20, "px"), label: Optional[str] = None, icon: Optional[str] = None,
+            html_code: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Wrapper to the check box button object.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.check(label="Label")
+      page.ui.buttons.check(True, label="Label")
+      page.ui.buttons.check(True, label="Label", icon="fas fa-align-center")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.CheckButton`
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param flag: Boolean. Optional. The value of the checkbox. Default False.
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param label: String. Optional. The component label content.
+    :param icon: String. Optional. The icon to be used in the check component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="px")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.CheckButton(
+      self.page, flag, tooltip, width, height, icon, label, html_code, options or {}, profile)
+    component.css({'display': 'inline-block', 'margin-right': '10px'})
+    html.Html.set_component_skin(component)
+    return component
+
+  def menu(self, record, text: str = "", icon: Optional[Union[str, bool]] = None,
+           width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"),
+           html_code: Optional[str] = None, tooltip: Optional[str] = None,
+           profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Button with an underlying items menu.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      tree5 = page.ui.buttons.menu(["A", "B", "C"], 'Menu')
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.ButtonMenu`
+
+    Related Pages:
+
+      https://www.w3schools.com/howto/tryit.asp?filename=tryhow_css_js_dropdown_hover
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/tree.py
+
+    Attributes:
+    ----------
+    :param record: List. Optional. The list of dictionaries with the data.
+    :param text: String. Optional. The value to be displayed to the button.
+    :param icon: String. Optional. The icon to be used in the check component.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.ButtonMenu(self.page, record, text, icon, width, height,
+                                           html_code=html_code, tooltip=tooltip, profile=profile, options=options)
+    component.container.css({"display": "none", "position": "absolute", "z-index": 5})
+    html.Html.set_component_skin(component)
+    return component
+
+  def store(self, image, url, width: Union[tuple, int] = (7.375, "rem"), height: Union[tuple, int] = (2.375, "rem"),
+            html_code: Optional[str] = None, align: str = "left", options: Optional[dict] = None,
+            profile: Union[dict, bool] = None):
+    """
+    Description:
+    -----------
+    Button for a badge which point to the various application stores (Google and Apple).
+    The badge must be issued from teh Google play store.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlImage.Image`
+
+    Related Pages:
+
+      https://play.google.com/intl/en_us/badges/
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+
+    Attributes:
+    ----------
+    :param image: String. The url of the image.
+    :param url: String. The link to the app in the store.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param align: String. The text-align property within this component.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="rem")
+    height = Arguments.size(height, unit="rem")
+    split_url = os.path.split(image)
+    component = self.page.ui.img(split_url[1], path=split_url[0], width=width, height=height, html_code=html_code,
+                                 options=options, profile=profile)
+    component.style.css.display = "inline-block"
+    component.goto(url)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def live(self, time, js_funcs, icon: Optional[Union[str, bool]] = "fas fa-circle",
+           width: Union[tuple, int] = (15, "px"), height: Union[tuple, int] = (15, "px"), align: str = "left",
+           html_code: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+    Live component which will trigger event every x second.
+    This will then allow other components to be refreshed in the page.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_icon.py
+
+    Attributes:
+    ----------
+    :param time: Integer. Interval time in second.
+    :param js_funcs: String | List. The Javascript functions.
+    :param icon: String. Optional. The font awesome icon reference.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    dflt_options = {"started": True}
+    if options is not None:
+      dflt_options.update(options)
+    component = self.page.ui.icons.awesome(
+      icon, width=width, height=height, html_code=html_code, options=options, profile=profile)
+    component.style.css.border_radius = "50px"
+    component.style.css.padding = 0
+    component.style.css.margin = 0
+    component.icon.style.css.font_factor(2)
+    component.icon.style.css.margin_right = 0
+    component.icon.style.css.margin = "-2px 0 0 -2px"
+    component.icon.style.css.padding_bottom = 10
+    if dflt_options["started"]:
+      component.attr["data-active"] = 1
+      component.icon.style.css.color = self.page.theme.success[1]
+      component.icon.style.effects.blink(2)
+      component.style.css.border = "1px solid %s" % self.page.theme.success[1]
+      self.page.body.onReady([
+        self.page.js.window.setInterval(js_funcs, "%s_timer" % component.htmlCode, time * 1000)], profile=profile)
+    else:
+      component.icon.style.css.color = self.page.theme.danger[1]
+      component.style.css.border = "1px solid %s" % self.page.theme.danger[1]
+      component.attr["data-active"] = 0
+    component.click([
+      self.page.js.if_(component.dom.getAttribute("data-active") == 1, [
+        component.dom.setAttribute("data-active", 0).r,
+        component.dom.css("border-color", self.page.theme.danger[1]).r,
+        component.icon.dom.css("color", self.page.theme.danger[1]).r,
+        component.icon.dom.css("animation", 'none').r,
+        self.page.js.window.clearInterval("%s_timer" % component.htmlCode)
+      ]).else_([
+        component.dom.setAttribute("data-active", 1).r,
+        component.dom.css("border-color", self.page.theme.success[1]).r,
+        component.icon.dom.css("color", self.page.theme.success[1]).r,
+        component.icon.dom.effects.blink(2),
+        self.page.js.window.setInterval(js_funcs, "%s_timer" % component.htmlCode, time * 1000, profile=profile)
+      ]),
+    ])
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def text(self, text: str, icon: Optional[Union[str, bool]] = None, width: Union[tuple, int] = ('auto', ""),
+           tooltip: Optional[str] = None, height: Union[tuple, int] = (None, "px"),
+           align: str = "left", html_code: Optional[str] = None, profile: Union[dict, bool] = None,
+           options: Optional[dict] = None):
+    """
+    Description:
+    -----------
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Templates:
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    component = self.page.ui.text(
+      text, tooltip=tooltip, width=width, html_code=html_code, height=height, profile=profile, options=options)
+    component.add_icon(icon, html_code=component.htmlCode)
+    self.__align(component, align)
+    html.Html.set_component_skin(component)
+    return component
+
+  def thumbs_up(self, width: Union[tuple, int] = ("auto", ""), height: Union[tuple, int] = (None, "px"),
+                align: str = "left", html_code: Optional[str] = None, tooltip: Optional[str] = None,
+                profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Button with the font awesome icon far fa-thumbs-up.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Templates:
+
+    Attributes:
+    ----------
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    component = self.button(icon="far fa-thumbs-up", width=width, height=height, html_code=html_code, tooltip=tooltip,
+                      profile=profile, options=options, align=align)
+    component.style.css.background = self.page.theme.success[1]
+    component.style.css.border_color = self.page.theme.success[1]
+    component.style.css.padding = "0 10px"
+    component.icon.style.css.color = "white"
+    html.Html.set_component_skin(component)
+    return component
+
+  def thumbs_down(self, width: Union[tuple, int] = ("auto", ""), height: Union[tuple, int] = (None, "px"),
+                  align: str = "left", html_code: Optional[str] = None, tooltip: Optional[str] = None,
+                  profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Button with the font awesome icon far fa-thumbs-down.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Templates:
+
+    Attributes:
+    ----------
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    component = self.button(icon="far fa-thumbs-down", width=width, height=height, html_code=html_code, tooltip=tooltip,
+                      profile=profile, options=options, align=align)
+    component.style.css.background = self.page.theme.danger[1]
+    component.style.css.border_color = self.page.theme.danger[1]
+    component.style.css.padding = "0 10px"
+    component.icon.style.css.color = "white"
+    html.Html.set_component_skin(component)
+    return component
+
+  def pill(self, text: str, value=None, group: Optional[str] = None,
+           width: Union[tuple, int] = ("auto", ""), height: Union[tuple, int] = (None, "px"), align: str = "left",
+           html_code: Optional[str] = None, tooltip: Optional[str] = None, profile: Union[dict, bool] = None,
+           options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Templates:
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The text to be displayed to the button.
+    :param value: String. Optional. The value to be displayed in the pill.
+    :param group: String. Optional. The group value fot the pill.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    component = self.page.ui.text(
+      text, width=width, height=height, align=align, html_code=html_code, tooltip=tooltip, profile=profile,
+      options=options)
+    component.style.css.background = self.page.theme.greys[3]
+    component.options.style_select = "pill_selected"
+    component.style.css.border_radius = 20
+    component.style.css.padding = "0 5px"
+    component.attr["data-value"] = value or text
+    component.style.add_classes.div.color_background_hover()
+    if group is not None:
+      self.page.body.style.custom_class({
+        "background": self.page.theme.colors[6], "color": self.page.theme.greys[0],
+      }, classname="pill_selected", important=True)
+      component.attr["data-group"] = group
+    html.Html.set_component_skin(component)
+    return component
+
+  def more(self, items, text: str = "More", width: Union[tuple, int] = ("auto", ""),
+           height: Union[tuple, int] = (None, "px"), html_code: Optional[str] = None,
+           tooltip: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      b = page.ui.buttons.more([
+        {"text": "Add", "target": "_blank", "icon": "fab fa-500px",
+         "url": "https://stackoverflow.com/questions/5884066/hashing-a-dictionary"},
+        {"text": "Delete", "target": "_blank", "icon": "fab fa-500px",
+         "url": "https://stackoverflow.com/questions/5884066/hashing-a-dictionary"},
+      ])
+      b.click([page.js.console.log("Click event")])
+
+    Templates:
+
+    Related Pages:
+
+    Attributes:
+    ----------
+    :param items: List. List of items to be added to the menu.
+    :param text: String. Optional. The text visible in the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    options = options or {}
+    # report, record, text, width, height, html_code, tooltip, profile, options
+    component = html.HtmlButton.ButtonMore(
+      self.page, items, text, width, height, html_code=html_code, tooltip=tooltip, profile=profile, options=options)
+    html.Html.set_component_skin(component)
+    return component
+
+  def filter(self, text: str, is_number: bool = False, width: Union[tuple, int] = ("auto", ""),
+             height: Union[tuple, int] = (None, "px"), html_code: Optional[str] = None,
+             tooltip: Optional[str] = None, profile: Union[dict, bool] = None, options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+
+    :tags:
+    :categories:
+
+    Usage::
+
+    Attributes:
+    ----------
+    :param text:
+    :param is_number:
+    :param width:
+    :param height:
+    :param html_code:
+    :param tooltip:
+    :param profile:
+    :param options:
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    dfl_options = {
+      "is_number": False,
+      "categories": ["Contains", "Not contains", "Equals", "Not equals", "Starts with", "Ends with"]}
+
+    if is_number:
+      dfl_options = {
+        "is_number": True,
+        "categories": ["Is Lower than", "Inferior or equals", "Equals", "Not equals", "Superior or equals",
+                       "Is Greater than"]}
+    if options is not None:
+      dfl_options.update(options)
+    # report, record, text, width, height, html_code, tooltip, profile, options
+    component = html.HtmlButton.ButtonFilter(
+      self.page, text, width, height, html_code=html_code, tooltip=tooltip, profile=profile, options=dfl_options)
+    html.Html.set_component_skin(component)
+    return component
+
+  def refresh(self, text: str = "Refresh", icon: Optional[Union[str, bool]] = "fas fa-sync-alt",
+              width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"), align: str = "left",
+              html_code: Optional[str] = None, tooltip: Optional[str] = None, profile: Union[dict, bool] = None,
+              options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Standard refresh button with a font-awesome icon.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.refresh("Refresh")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/alerts.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_link.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    component = html.HtmlButton.Button(
+      self.page, text, icon, width, height, html_code=html_code, tooltip=tooltip, profile=profile, options=options)
+    self.__align(component, align)
+    component.style.css.padding = "5px 10px"
+    component.style.css.margin_top = "5px !IMPORTANT"
+    component.style.css.color = self.page.theme.greys[0]
+    component.style.css.line_height = 0
+    component.style.css.background = self.page.theme.colors[-1]
+    component.style.css.border_color = self.page.theme.colors[-1]
+    html.Html.set_component_skin(component)
+    return component
+
+  def data(self, filename, text: str = "", icon: Optional[Union[str, bool]] = None,
+           width: Union[tuple, int] = (None, "%"), height: Union[tuple, int] = (None, "px"), align: str = "left",
+           html_code: Optional[str] = None, tooltip: Optional[str] = None, profile: Union[dict, bool] = None,
+           options: Optional[dict] = None):
+    """
+    Description:
+    ------------
+    Standard refresh button with a font-awesome icon.
+
+    :tags:
+    :categories:
+
+    Usage::
+
+      page.ui.buttons.refresh("Refresh")
+
+    Underlying HTML Objects:
+
+      - :class:`epyk.core.html.HtmlButton.Button`
+
+    Related Pages:
+
+      https://www.w3schools.com/tags/tag_button.asp
+      http://www.kodingmadesimple.com/2015/04/custom-twitter-bootstrap-buttons-icons-images.html
+
+    Templates:
+
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/alerts.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/button_link.py
+      https://github.com/epykure/epyk-templates/blob/master/locals/components/checkbox.py
+
+    Attributes:
+    ----------
+    :param filename: String. Optional. The filename.
+    :param text: String. Optional. The value to be displayed to the button.
+    :param width: Tuple. Optional. A tuple with the integer for the component width and its unit.
+    :param height: Tuple. Optional. A tuple with the integer for the component height and its unit.
+    :param align: String. Optional. A string with the horizontal position of the component.
+    :param icon: String. Optional. A string with the value of the icon to display from font-awesome.
+    :param html_code: String. Optional. An identifier for this component (on both Python and Javascript side).
+    :param tooltip: String. Optional. A string with the value of the tooltip.
+    :param profile: Boolean | Dictionary. Optional. A flag to set the component performance storage.
+    :param options: Dictionary. Optional. Specific Python options available for this component.
+    """
+    width = Arguments.size(width, unit="%")
+    height = Arguments.size(height, unit="px")
+    if icon is None:
+      mapped_file = {
+        "excel": 'far fa-file-excel', 'pdf': 'far fa-file-pdf', 'code': 'far fa-file-code', 'csv': 'fas fa-file-csv',
+        'word': 'fa-file-word'}
+      extension = filename.split(".")[-1]
+      if extension in mapped_file:
+        icon = mapped_file[extension]
+    component = html.HtmlButton.ButtonData(
+      self.page, text, icon, width, height, html_code=html_code, tooltip=tooltip, profile=profile, options=options)
+    self.__align(component, align)
+    component.filename = filename
+    component.style.css.padding = 5
+    component.style.css.visibility = "hidden"
+    component.style.css.margin_top = "5px !IMPORTANT"
+    component.style.css.line_height = 0
+    component.style.css.color = self.page.theme.colors[-1]
+    html.Html.set_component_skin(component)
+    return component
