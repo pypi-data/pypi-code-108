@@ -1,0 +1,1570 @@
+# Copyright 2018, The TensorFlow Federated Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# pytype: skip-file
+# This modules disables the Pytype analyzer, see
+# https://github.com/tensorflow/federated/blob/main/docs/pytype.md for more
+# information.
+"""A library of transformation functions for ASTs."""
+
+import typing
+from typing import Tuple
+
+from tensorflow_federated.python.common_libs import py_typecheck
+from tensorflow_federated.python.common_libs import structure
+from tensorflow_federated.python.core.impl.compiler import building_block_analysis
+from tensorflow_federated.python.core.impl.compiler import building_block_factory
+from tensorflow_federated.python.core.impl.compiler import building_blocks
+from tensorflow_federated.python.core.impl.compiler import compiled_computation_transforms
+from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
+from tensorflow_federated.python.core.impl.compiler import transformation_utils
+from tensorflow_federated.python.core.impl.compiler import tree_analysis
+from tensorflow_federated.python.core.impl.types import computation_types
+from tensorflow_federated.python.core.impl.types import type_analysis
+from tensorflow_federated.python.core.impl.types import type_transformations
+
+TransformReturnType = Tuple[building_blocks.ComputationBuildingBlock, bool]
+
+
+class TransformationError(Exception):
+  """Raised when a transformation fails."""
+
+
+def _apply_transforms(comp, transforms):
+  """Applies all `transforms` in a single walk of `comp`.
+
+  This function is private for a reason; TFF does not intend to expose the
+  capability to chain arbitrary transformations in this way, since the
+  application of one transformation may cause the resulting AST to violate the
+  assumptions of another. This function should be used quite selectively and
+  considered extensively in order to avoid such subtle issues.
+
+  Args:
+    comp: An instance of `building_blocks.ComputationBuildingBlock` to transform
+      with all elements of `transforms`.
+    transforms: An instance of `transformation_utils.TransformSpec` or iterable
+      thereof, the transformations to apply to `comp`.
+
+  Returns:
+    A transformed version of `comp`, with all transformations in `transforms`
+    applied.
+
+  Raises:
+    TypeError: If the types don't match.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+  if isinstance(transforms, transformation_utils.TransformSpec):
+    transforms = [transforms]
+  else:
+    for transform in transforms:
+      py_typecheck.check_type(transform, transformation_utils.TransformSpec)
+
+  def _transform(comp):
+    modified = False
+    for transform in transforms:
+      comp, transform_modified = transform.transform(comp)
+      modified = modified or transform_modified
+    return comp, modified
+
+  return transformation_utils.transform_postorder(comp, _transform)
+
+
+class ExtractComputation(transformation_utils.TransformSpec):
+  """Extracts a computation if all referenced variables are free (unbound).
+
+  This transforms a computation which matches the `predicate` or is a Block, and
+  replaces the computations with a LET construct if it doesn't reference any
+  variables bound by the current scope.
+
+  Both the `parameter_name` of a `building_blocks.Lambda` and the name of
+  any variable defined by a `building_blocks.Block` can affect the scope in
+  which a reference in computation is bound.
+
+  Note: This function extracts `computation_building_block.Block` because block
+  variables can restrict the scope in which computations are bound.
+  """
+
+  def __init__(self, comp, predicate):
+    """Constructs a new instance.
+
+    Args:
+      comp: The computation building block in which to perform the extractions.
+        The names of lambda parameters and block variables in `comp` must be
+        unique.
+      predicate: A function that takes a single computation building block as a
+        argument and returns `True` if the computation should be extracted and
+        `False` otherwise.
+
+    Raises:
+      TypeError: If types do not match.
+      ValueError: If `comp` contains variables with non-unique names.
+    """
+    super().__init__()
+    py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+    tree_analysis.check_has_unique_names(comp)
+    self._name_generator = building_block_factory.unique_name_generator(comp)
+    self._predicate = predicate
+    self._unbound_references = transformation_utils.get_map_of_unbound_references(
+        comp)
+
+  def _contains_unbound_reference(self, comp, names):
+    """Returns `True` if `comp` contains unbound references to `names`.
+
+    This function will update the non-local `_unbound_references` captured from
+    the parent context if `comp` is not contained in that collection. This can
+    happen when new computations are created and added to the AST.
+
+    Args:
+      comp: The computation building block to test.
+      names: A Python string or a list, tuple, or set of Python strings.
+    """
+    if isinstance(names, str):
+      names = (names,)
+    if comp not in self._unbound_references:
+      references = transformation_utils.get_map_of_unbound_references(comp)
+      self._unbound_references.update(references)
+    return any(n in self._unbound_references[comp] for n in names)
+
+  def _passes_test_or_block(self, comp):
+    """Returns `True` if `comp` matches the `predicate` or is a block."""
+    return comp is not None and (self._predicate(comp) or comp.is_block())
+
+  def should_transform(self, comp):
+    """Returns `True` if `comp` should be transformed.
+
+    The following `_extract_intrinsic_*` methods all depend on being invoked
+    after `should_transform` evaluates to `True` for a given `comp`. Because of
+    this certain assumptions are made:
+
+    * transformation functions will transform a given `comp`
+    * block variables are guaranteed to not be empty
+
+    Args:
+      comp: The computation building block in which to test.
+    """
+    if comp.is_block():
+      return (self._passes_test_or_block(comp.result) or
+              any(e.is_block() for _, e in comp.locals))
+    elif comp.is_call():
+      return (self._passes_test_or_block(comp.function) or
+              self._passes_test_or_block(comp.argument))
+    elif comp.is_lambda():
+      param_name = comp.parameter_name
+      if param_name is None:
+        param_name = set()
+      if self._predicate(comp.result):
+        return True
+      if comp.result.is_block():
+        for index, (_, variable) in enumerate(comp.result.locals):
+          names = [n for n, _ in comp.result.locals[:index]]
+          if (not self._contains_unbound_reference(variable, param_name) and
+              not self._contains_unbound_reference(variable, names)):
+            return True
+    elif comp.is_selection():
+      return self._passes_test_or_block(comp.source)
+    elif comp.is_struct():
+      return any(self._passes_test_or_block(e) for e in comp)
+    return False
+
+  def _extract_from_block(self, comp):
+    """Returns a new computation with all intrinsics extracted."""
+    if self._predicate(comp.result):
+      name = next(self._name_generator)
+      variables = comp.locals
+      variables.append((name, comp.result))
+      result = building_blocks.Reference(name, comp.result.type_signature)
+    elif comp.result.is_block():
+      variables = comp.locals + comp.result.locals
+      result = comp.result.result
+    else:
+      variables = comp.locals
+      result = comp.result
+
+    def _remove_blocks_from_variables(variables):
+      new_variables = []
+      for name, variable in variables:
+        if variable.is_block():
+          new_variables.extend(variable.locals)
+          new_variables.append((name, variable.result))
+        else:
+          new_variables.append((name, variable))
+      return new_variables
+
+    variables = _remove_blocks_from_variables(variables)
+    return building_blocks.Block(variables, result)
+
+  def _extract_from_call(self, comp):
+    """Returns a new computation with all intrinsics extracted."""
+    variables = []
+    if self._predicate(comp.function):
+      name = next(self._name_generator)
+      variables.append((name, comp.function))
+      function = building_blocks.Reference(name, comp.function.type_signature)
+    elif comp.function.is_block():
+      block = comp.function
+      variables.extend(block.locals)
+      function = block.result
+    else:
+      function = comp.function
+    if comp.argument is not None:
+      if self._predicate(comp.argument):
+        name = next(self._name_generator)
+        variables.append((name, comp.argument))
+        argument = building_blocks.Reference(name, comp.argument.type_signature)
+      elif comp.argument.is_block():
+        block = comp.argument
+        variables.extend(block.locals)
+        argument = block.result
+      else:
+        argument = comp.argument
+    else:
+      argument = None
+    call = building_blocks.Call(function, argument)
+    block = building_blocks.Block(variables, call)
+    return self._extract_from_block(block)
+
+  def _extract_from_lambda(self, comp):
+    """Returns a new computation with all intrinsics extracted."""
+    if comp.parameter_name is None:
+      captured_names = set()
+    else:
+      captured_names = comp.parameter_name
+    if self._predicate(comp.result):
+      name = next(self._name_generator)
+      variables = [(name, comp.result)]
+      result = building_blocks.Reference(name, comp.result.type_signature)
+      if not self._contains_unbound_reference(comp.result, captured_names):
+        fn = building_blocks.Lambda(comp.parameter_name, comp.parameter_type,
+                                    result)
+        block = building_blocks.Block(variables, fn)
+        return self._extract_from_block(block)
+      else:
+        block = building_blocks.Block(variables, result)
+        block = self._extract_from_block(block)
+        return building_blocks.Lambda(comp.parameter_name, comp.parameter_type,
+                                      block)
+    else:
+      block = comp.result
+      extracted_variables = []
+      retained_variables = []
+      for name, variable in block.locals:
+        names = [n for n, _ in retained_variables]
+        if (not self._contains_unbound_reference(variable, captured_names) and
+            not self._contains_unbound_reference(variable, names)):
+          extracted_variables.append((name, variable))
+        else:
+          retained_variables.append((name, variable))
+      if retained_variables:
+        result = building_blocks.Block(retained_variables, block.result)
+      else:
+        result = block.result
+      fn = building_blocks.Lambda(comp.parameter_name, comp.parameter_type,
+                                  result)
+      block = building_blocks.Block(extracted_variables, fn)
+      return self._extract_from_block(block)
+
+  def _extract_from_selection(self, comp):
+    """Returns a new computation with all intrinsics extracted."""
+    if self._predicate(comp.source):
+      name = next(self._name_generator)
+      variables = [(name, comp.source)]
+      source = building_blocks.Reference(name, comp.source.type_signature)
+    else:
+      block = comp.source
+      variables = block.locals
+      source = block.result
+    selection = building_blocks.Selection(
+        source, name=comp.name, index=comp.index)
+    block = building_blocks.Block(variables, selection)
+    return self._extract_from_block(block)
+
+  def _extract_from_tuple(self, comp):
+    """Returns a new computation with all intrinsics extracted."""
+    variables = []
+    elements = []
+    for name, element in structure.iter_elements(comp):
+      if self._passes_test_or_block(element):
+        variable_name = next(self._name_generator)
+        variables.append((variable_name, element))
+        ref = building_blocks.Reference(variable_name, element.type_signature)
+        elements.append((name, ref))
+      else:
+        elements.append((name, element))
+    tup = building_blocks.Struct(elements)
+    block = building_blocks.Block(variables, tup)
+    return self._extract_from_block(block)
+
+  def transform(self, comp):
+    """Returns a new transformed computation or `comp`."""
+    if not self.should_transform(comp):
+      return comp, False
+    if comp.is_block():
+      comp = self._extract_from_block(comp)
+    elif comp.is_call():
+      comp = self._extract_from_call(comp)
+    elif comp.is_lambda():
+      comp = self._extract_from_lambda(comp)
+    elif comp.is_selection():
+      comp = self._extract_from_selection(comp)
+    elif comp.is_struct():
+      comp = self._extract_from_tuple(comp)
+    return comp, True
+
+
+def extract_computations(comp):
+  """Extracts subcomputations to a binding in the outermost-possible scope.
+
+  Subcomputations that reference only free variables (variables bound outside
+  `comp`) will be extracted to root-level. Computations which reference bound
+  variables will be extracted to the scope in which the innermost variable
+  they reference is bound.
+
+  Args:
+    comp: The computation building block on which to perform the transformation.
+
+  Returns:
+    A computation representing `comp` with the transformation applied.
+  """
+
+  def _predicate(comp):
+    return not comp.is_reference()
+
+  return _apply_transforms(comp, ExtractComputation(comp, _predicate))
+
+
+def extract_intrinsics(comp):
+  """Extracts intrinsics to a binding in the outermost-possible scope.
+
+  Intrinsics that reference only free variables (variables bound outside
+  `comp`) will be extracted to root-level. Intrinsics which reference bound
+  variables will be extracted to the scope in which the innermost variable
+  they depend on is bound.
+
+  Args:
+    comp: The computation building block in which to perform the transformation.
+
+  Returns:
+    A new computation representing `comp` with the transformation applied.
+  """
+
+  def _predicate(comp):
+    return building_block_analysis.is_called_intrinsic(comp)
+
+  return _apply_transforms(comp, ExtractComputation(comp, _predicate))
+
+
+class InlineBlock(transformation_utils.TransformSpec):
+  """Inlines the block variables in `comp` specified by `variable_names`.
+
+  Each invocation of the `transform` method checks for presence of a
+  block-bound `building_blocks.Reference`, and inlines this
+  reference with its appropriate value.
+  """
+
+  def __init__(self, comp, variable_names=None):
+    """Initializes the block inliner.
+
+    Checks that `comp` has unique names, and that `variable_names` is an
+    iterable of string types.
+
+    Args:
+      comp: The top-level computation to inline.
+      variable_names: The variable names to inline. If `None`, inlines all
+        variables.
+
+    Raises:
+      ValueError: If `comp` contains variables with non-unique names.
+      TypeError: If `variable_names` is a non-`list`, `set` or `tuple`, or
+        contains anything other than strings.
+    """
+    super().__init__(global_transform=True)
+    py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+    tree_analysis.check_has_unique_names(comp)
+    if variable_names is not None:
+      py_typecheck.check_type(variable_names, (list, tuple, set))
+      for name in variable_names:
+        py_typecheck.check_type(name, str)
+    self._variable_names = variable_names
+
+  def _should_inline_variable(self, name):
+    return self._variable_names is None or name in self._variable_names
+
+  def should_transform(self, comp):
+    return ((comp.is_reference() and self._should_inline_variable(comp.name)) or
+            (comp.is_block() and any(
+                self._should_inline_variable(name) for name, _ in comp.locals)))
+
+  def transform(self, comp, symbol_tree):
+    if not self.should_transform(comp):
+      return comp, False
+    if comp.is_reference():
+      payload = symbol_tree.get_payload_with_name(comp.name)
+      if payload is None:
+        value = None
+      else:
+        value = payload.value
+      # This identifies a variable bound by a Block as opposed to a Lambda.
+      if value is not None:
+        return value, True
+      return comp, False
+    elif comp.is_block():
+      variables = [(name, value)
+                   for name, value in comp.locals
+                   if not self._should_inline_variable(name)]
+      if not variables:
+        comp = comp.result
+      else:
+        comp = building_blocks.Block(variables, comp.result)
+      return comp, True
+    return comp, False
+
+
+def inline_block_locals(comp, variable_names=None):
+  """Inlines the block variables in `comp` specified by `variable_names`."""
+  symbol_tree = transformation_utils.SymbolTree(
+      transformation_utils.ReferenceCounter)
+  transform_spec = InlineBlock(comp, variable_names)
+  return transformation_utils.transform_postorder_with_symbol_bindings(
+      comp, transform_spec.transform, symbol_tree)
+
+
+class InlineSelectionsFromTuples(transformation_utils.TransformSpec):
+  """Inlines all Tuple-bound variables which are referenced via Selections.
+
+  This should be used as a preprocessing and optimization step, since this can
+  allow for large tuples which are only referenced as selections to be removed
+  in another pass. Notice this transform makes no effort to remove these tuples,
+  as it does nothing to guarantee that the tuples it inlines are not referenced
+  elsewhere.
+
+  This is implemented as a stanadlone transform, as opposed to simply extending
+  `ReplaceSelectionFromTuple`, in order to preserve ease of chaining that
+  transformation together with inlining all or some block locals.
+  """
+
+  def __init__(self):
+    super().__init__(global_transform=True)
+
+  def should_transform(self, comp, symbol_tree):
+    if comp.is_selection() and comp.source.is_struct():
+      return True
+    elif comp.is_selection() and comp.source.is_reference():
+      resolved = symbol_tree.get_payload_with_name(comp.source.name)
+      return (resolved is not None and resolved.value is not None and
+              resolved.value.is_struct())
+    return False
+
+  def transform(self, comp, symbol_tree):
+    if not self.should_transform(comp, symbol_tree):
+      return comp, False
+    if comp.source.is_struct():
+      tup = comp.source
+    else:
+      comp.source.check_reference()
+      tup = symbol_tree.get_payload_with_name(comp.source.name).value
+    if comp.index is None:
+      # Look up the index based on the type signature of the original source.
+      # The underlying value it refers to might be an unnamed struct because we
+      # allow coercion from unnamed structs to named structs.
+      index = structure.name_to_index_map(comp.source.type_signature)[comp.name]
+    else:
+      index = comp.index
+    return tup[index], True
+
+
+def inline_selections_from_tuple(comp):
+  symbol_tree = transformation_utils.SymbolTree(
+      transformation_utils.TrackRemovedReferences)
+  transform_spec = InlineSelectionsFromTuples()
+  return transformation_utils.transform_postorder_with_symbol_bindings(
+      comp, transform_spec.transform, symbol_tree)
+
+
+class MergeChainedBlocks(transformation_utils.TransformSpec):
+  r"""Merges chained blocks into one block.
+
+  Looks for occurrences of the following patterns:
+
+        Block
+       /     \
+  [...]       Block
+             /     \
+        [...]       Comp(x)
+  or
+
+       Block------------
+      /                  \
+  [..., a=Block, ...]     Comp(x)
+
+  And merges them to
+
+        Block
+       /     \
+  [...]       Comp(x)
+
+  Preserving the relative ordering of any locals declarations.
+
+  Since pulling up the bindings from a block bound to a local may interfere
+  with existing scopes, this transformation requires that the computations it
+  operates on have unique binding names.
+
+  Notice that because TFF Block constructs bind their variables in sequence, it
+  is completely safe to add the locals lists together in this implementation.
+  """
+
+  def __init__(self, comp):
+    tree_analysis.check_has_unique_names(comp)
+
+  def should_transform(self, comp):
+    """Returns `True` if `comp` is a block and its result is a block."""
+    return comp.is_block() and (comp.result.is_block() or
+                                any(x[1].is_block() for x in comp.locals))
+
+  def transform(self, comp):
+    """Returns a new transformed computation or `comp`."""
+    if not self.should_transform(comp):
+      return comp, False
+    if comp.result.is_block():
+      comp = building_blocks.Block(comp.locals + comp.result.locals,
+                                   comp.result.result)
+    new_locals = []
+    for name, local_comp in comp.locals:
+      if not local_comp.is_block():
+        new_locals.append((name, local_comp))
+      else:
+        new_locals.extend(local_comp.locals)
+        new_locals.append((name, local_comp.result))
+
+    constructed_comp = building_blocks.Block(new_locals, comp.result)
+    return constructed_comp, True
+
+
+def merge_chained_blocks(comp):
+  """Merges chained blocks into one block."""
+  return _apply_transforms(comp, MergeChainedBlocks(comp))
+
+
+def remove_duplicate_block_locals(comp):
+  r"""Removes duplicated computations from Block locals in `comp`.
+
+  This transform traverses `comp` postorder and removes duplicated computation
+  building blocks from Block locals in `comp`. Additionally, Blocks variables
+  whose value is a Reference and References pointing to References are removed.
+
+  Args:
+    comp: The computation building block in which to perform the removals.
+
+  Returns:
+    A new computation with the transformation applied or the original `comp`.
+
+  Raises:
+    TypeError: If types do not match.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+  tree_analysis.check_has_unique_names(comp)
+
+  def _should_transform(comp):
+    """Returns `True` if `comp` should be transformed."""
+    return comp.is_block() or comp.is_reference()
+
+  def _resolve_reference_to_concrete(
+      ref: building_blocks.Reference,
+      symbol_tree: transformation_utils.SymbolTree
+  ) -> building_blocks.ComputationBuildingBlock:
+    """Resolves `value` to a concrete building block, as far as possible.
+
+    Args:
+      ref: Instance of `building_blocks.Reference` to resolve in `symbol_tree`.
+      symbol_tree: Instance of `transformation_utils.SymbolTree` which contains
+        variable bindings to be used when resolving `value`.
+
+    Returns:
+      The resolution of `value` in symbol tree. If this resolution is
+      itself a reference, this indicates that the reference chain terminates in
+      either an unbound reference or a parameter binding, and thus cannot be
+      resolved any further.
+    """
+    comp = ref
+    while comp.is_reference():
+      payload = symbol_tree.get_payload_with_name(comp.name)
+      if payload is None:
+        # We've resolved this reference to an unbound comp; we cannot alter the
+        # unbound comp, so return it in place of `ref`.
+        return comp
+      new_comp = payload.value
+      if new_comp is None:
+        # `comp` is bound by a lambda; we cannot alter this either.
+        return comp
+      else:
+        comp = new_comp
+    return comp
+
+  def _remove_reference_chain(ref, symbol_tree):
+    value = _resolve_reference_to_concrete(ref, symbol_tree)
+    if value.is_reference():
+      return value, True
+    payloads_with_value = symbol_tree.get_higher_payloads_with_value(
+        value, tree_analysis.trees_equal)
+    if not payloads_with_value:
+      # In this case, the current binding is the only visible binding with value
+      # `value`. We don't need to update anything, or replace the current
+      # reference.
+      return ref, False
+    else:
+      highest_payload = payloads_with_value[-1]
+      lower_payloads = payloads_with_value[:-1]
+      for payload in lower_payloads:
+        symbol_tree.update_payload_with_name(payload.name)
+      highest_building_block = building_blocks.Reference(
+          highest_payload.name, highest_payload.value.type_signature)
+      return highest_building_block, True
+
+  def _transform(comp, symbol_tree):
+    """Returns a new transformed computation or `comp`."""
+    if not _should_transform(comp):
+      return comp, False
+    if comp.is_block():
+      variables = []
+      for name, value in comp.locals:
+        symbol_tree.walk_down_one_variable_binding()
+        payload = symbol_tree.get_payload_with_name(name)
+        if (not payload.removed) and (not value.is_reference()):
+          variables.append((name, value))
+      if not variables:
+        comp = comp.result
+      else:
+        comp = building_blocks.Block(variables, comp.result)
+      return comp, True
+    elif comp.is_reference():
+      return _remove_reference_chain(comp, symbol_tree)
+    return comp, False
+
+  symbol_tree = transformation_utils.SymbolTree(
+      transformation_utils.TrackRemovedReferences)
+  return transformation_utils.transform_postorder_with_symbol_bindings(
+      comp, _transform, symbol_tree)
+
+
+def remove_mapped_or_applied_identity(comp):
+  r"""Removes all the mapped or applied identity functions in `comp`.
+
+  This transform traverses `comp` postorder, matches the following pattern, and
+  removes all the mapped or applied identity fucntions by replacing the
+  following computation:
+
+            Call
+           /    \
+  Intrinsic      Tuple
+                 |
+                 [Lambda(x), Comp(y)]
+                           \
+                            Ref(x)
+
+  Intrinsic(<(x -> x), y>)
+
+  with its argument:
+
+  Comp(y)
+
+  y
+
+  Args:
+    comp: The computation building block in which to perform the removals.
+
+  Returns:
+    A new computation with the transformation applied or the original `comp`.
+
+  Raises:
+    TypeError: If types do not match.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+
+  def _should_transform(comp):
+    """Returns `True` if `comp` is a mapped or applied identity function."""
+    if (comp.is_call() and comp.function.is_intrinsic() and
+        comp.function.uri in (
+            intrinsic_defs.FEDERATED_MAP.uri,
+            intrinsic_defs.FEDERATED_MAP_ALL_EQUAL.uri,
+            intrinsic_defs.FEDERATED_APPLY.uri,
+            intrinsic_defs.SEQUENCE_MAP.uri,
+        )):
+      called_function = comp.argument[0]
+      return building_block_analysis.is_identity_function(called_function)
+    return False
+
+  def _transform(comp):
+    if not _should_transform(comp):
+      return comp, False
+    transformed_comp = comp.argument[1]
+    return transformed_comp, True
+
+  return transformation_utils.transform_postorder(comp, _transform)
+
+
+class RemoveUnusedBlockLocals(transformation_utils.TransformSpec):
+  """Removes block local variables which are not used in the result."""
+
+  def should_transform(self, comp):
+    return comp.is_block()
+
+  def transform(self, comp):
+    if not self.should_transform(comp):
+      return comp, False
+    unbound_ref_set = transformation_utils.get_map_of_unbound_references(
+        comp.result)[comp.result]
+    if (not unbound_ref_set) or (not comp.locals):
+      return comp.result, True
+    new_locals = []
+    for name, val in reversed(comp.locals):
+      if name in unbound_ref_set:
+        new_locals.append((name, val))
+        unbound_ref_set = unbound_ref_set.union(
+            transformation_utils.get_map_of_unbound_references(val)[val])
+        unbound_ref_set.discard(name)
+    if len(new_locals) == len(comp.locals):
+      return comp, False
+    elif not new_locals:
+      return comp.result, True
+    return building_blocks.Block(reversed(new_locals), comp.result), True
+
+
+def remove_unused_block_locals(comp):
+  return _apply_transforms(comp, RemoveUnusedBlockLocals())
+
+
+class ReplaceCalledLambdaWithBlock(transformation_utils.TransformSpec):
+  r"""Replaces all the called lambdas in `comp` with a block.
+
+  This transform replaces the following computation containing a called lambda:
+
+            Call
+           /    \
+  Lambda(x)      Comp(y)
+           \
+            Comp(z)
+
+  (x -> z)(y)
+
+  with the following computation containing a block:
+
+             Block
+            /     \
+  [x=Comp(y)]       Comp(z)
+
+  let x=y in z
+  """
+
+  def __init__(self):
+    super().__init__(global_transform=True)
+
+  def should_transform(self, comp, referred):
+    if comp.is_call():
+      return (comp.function.is_lambda() or
+              (referred is not None and referred.is_lambda()))
+    return comp.is_block()
+
+  def _resolve_reference_to_concrete_value(self, ref, symbol_tree):
+    while ref.is_reference():
+      referred_payload = symbol_tree.get_payload_with_name(ref.name)
+      ref = referred_payload.value
+    return ref
+
+  def transform(self, comp, symbol_tree):
+    referred: typing.Optional[building_blocks.ComputationBuildingBlock] = None
+    if comp.is_call() and comp.function.is_reference():
+      node = symbol_tree.get_payload_with_name(comp.function.name)
+      if node is not None:
+        referred = node.value
+        if referred is not None and referred.is_reference():
+          referred = self._resolve_reference_to_concrete_value(
+              referred, symbol_tree)
+    if not self.should_transform(comp, referred):
+      return comp, False
+    if comp.is_block():
+      new_locals = []
+      for name, value in comp.locals:
+        symbol_tree.walk_down_one_variable_binding()
+        if not symbol_tree.get_payload_with_name(name).removed:
+          new_locals.append((name, value))
+      if not new_locals:
+        return comp.result, True
+      elif len(new_locals) == len(comp.locals):
+        return comp, False
+      return building_blocks.Block(new_locals, comp.result), True
+    elif referred is not None and referred.is_lambda():
+      referred = typing.cast(building_blocks.Lambda, referred)
+      if referred.parameter_type is not None:
+        transformed_comp = building_blocks.Block(
+            [(referred.parameter_name, comp.argument)], referred.result)
+      else:
+        transformed_comp = referred.result
+      symbol_tree.update_payload_with_name(comp.function.name)
+    else:
+      if comp.function.parameter_type is not None:
+        transformed_comp = building_blocks.Block(
+            [(comp.function.parameter_name, comp.argument)],
+            comp.function.result)
+      else:
+        transformed_comp = comp.function.result
+    return transformed_comp, True
+
+
+def replace_called_lambda_with_block(comp):
+  """Replaces all the called lambdas in `comp` with a block."""
+  lambda_replacer = ReplaceCalledLambdaWithBlock()
+
+  def _transform_fn(comp, symbol_tree):
+    return lambda_replacer.transform(comp, symbol_tree)
+
+  symbol_tree = transformation_utils.SymbolTree(
+      transformation_utils.TrackRemovedReferences)
+  return transformation_utils.transform_postorder_with_symbol_bindings(
+      comp, _transform_fn, symbol_tree)
+
+
+class ReplaceSelectionFromTuple(transformation_utils.TransformSpec):
+  r"""Replaces any selection from a tuple with the underlying tuple element.
+
+  Invocations of `transform` replace any occurences of:
+
+  Selection
+           \
+            Tuple
+            |
+            [Comp, Comp, ...]
+
+  with the appropriate Comp, as determined by the `index` or `name` of the
+  `Selection`.
+  """
+
+  def should_transform(self, comp):
+    return comp.is_selection() and comp.source.is_struct()
+
+  def _get_index_from_name(self, selection_name, tuple_type_signature):
+    named_type_signatures = structure.to_elements(tuple_type_signature)
+    return [x[0] for x in named_type_signatures].index(selection_name)
+
+  def transform(self, comp):
+    if not self.should_transform(comp):
+      return comp, False
+    if comp.name is not None:
+      index = self._get_index_from_name(comp.name, comp.source.type_signature)
+    else:
+      index = comp.index
+    return comp.source[index], True
+
+
+def replace_selection_from_tuple_with_element(comp):
+  """Replaces any selection from a tuple with the underlying tuple element."""
+  return _apply_transforms(comp, ReplaceSelectionFromTuple())
+
+
+def resolve_higher_order_functions(
+    comp: building_blocks.ComputationBuildingBlock) -> TransformReturnType:
+  """Resolves higher order functions into the concrete functions they represent.
+
+  The terminology "resolve" came into existence thinking of cases like:
+
+  ```
+  (let x=federated_aggregate in x(some_federated_value))
+  ```
+
+  In this case, in order to rely on simply pattern-matching on called intrinsics
+  in a downstream transformation, we must "resolve" `x` to the function it
+  represents. This terminology continued to evolve to consider the case of
+  higher-order functions, e.g.
+
+  ```
+  ( -> federated_aggregate)()(some_federated_value)
+  ```
+
+  In this case, we must "resolve" the call to the no-arg lambda into its return
+  value to achieve coverage via pattern-matching, as before.
+
+  Concretely, we consider functions "resolved" if the folllwing condition is
+  satisfied: all instances of `building_blocks.Call` are either to a concrete
+  function (`building_blocks.Intrinsic`, `building_blocks.CompiledComputation`
+  or `building_blocks.Lambda`) whose return type has no functional elements, or
+  are to a reference to a function bound as parameter to an uncalled lambda. In
+  this final case, we slightly elide the distinction between a reference to
+  this parameter directly and a selection from a tuple-type parameter which
+  contains a functional element.
+
+  Args:
+    comp: An instance of `building_blocks.ComputationBuildingBlock` in which to
+      resolve higher-order functions as much as possible.
+
+  Returns:
+    A transformed version of `comp` whose functions are resolved, as specified
+    above.
+  """
+  tree_analysis.check_has_unique_names(comp)
+
+  functional_bindings = {}
+
+  def _contains_function(type_signature: computation_types.Type) -> bool:
+    return type_analysis.contains(type_signature, lambda x: x.is_function())
+
+  def _resolve_functional_reference(
+      ref: building_blocks.Reference) -> TransformReturnType:
+    """Inlines functional references if bound under `comp`."""
+    if ref.name in functional_bindings:
+      return functional_bindings[ref.name], True
+    return ref, False
+
+  def _resolve_block(block: building_blocks.Block) -> TransformReturnType:
+    """Resolves higher-order functions underneath a block.
+
+    The main responsibility of this function is to populate
+    `functional_bindings` with any bindings in the locals of `block` of
+    functional type. Beyond this, this functions simply continues the walk.
+
+    Args:
+      block: Instance of `building_blocks.Block` to transform.
+
+    Returns:
+      Transformed version of `block` as described above, plus a boolean
+      indicating whether `block` was indeed transformed.
+    """
+    new_locals = []
+    modified = False
+    for name, old_local in block.locals:
+      new_local, local_modified = _resolve_higher_order_fns(old_local)
+      if _contains_function(new_local.type_signature):
+        functional_bindings[name] = new_local
+      new_locals.append((name, new_local))
+      modified = modified or local_modified
+    new_result, result_modified = _resolve_higher_order_fns(block.result)
+    new_block = building_blocks.Block(new_locals, new_result)
+    modified = modified or result_modified
+    return new_block, modified
+
+  def _resolve_functional_selection(
+      sel: building_blocks.Selection) -> TransformReturnType:
+    """Resolves a selection of functional type.
+
+    This function can return any type of computation building block of
+    functional type. This function first continues the preorder walk with the
+    source of the selection to resolve any higher order functions in this
+    source. If the transformed source of `sel` is a tuple, this
+    function grabs the appropriate element from the underlying tuple. If the
+    source of `sel` is a block, this function returns a block with the selection
+    pushed through to the result. In any other case, this function returns a
+    selection building block, with source the resolved source of `sel`.
+
+    Args:
+      sel: Instance of `building_blocks.Selection` of type containing function.
+
+    Returns:
+      A transformed version of `sel` as described above, plus a boolean
+      indicating whether `sel` was indeed transformed.
+    """
+    resolved_source, source_modified = _resolve_higher_order_fns(sel.source)
+    if resolved_source.is_block():
+      new_block = building_blocks.Block(
+          resolved_source.locals,
+          building_blocks.Selection(
+              source=resolved_source.result, index=sel.index, name=sel.name))
+      # No need to re-traverse, this cannot break the desired invariant of the
+      # top-level function.
+      return new_block, True
+    elif resolved_source.is_struct():
+      if sel.index is not None:
+        return resolved_source[sel.index], True
+      else:
+        return resolved_source.__getattr__(sel.name), True
+    else:
+      return building_blocks.Selection(
+          source=resolved_source, index=sel.index,
+          name=sel.name), source_modified
+
+  def _resolve_call(call: building_blocks.Call) -> TransformReturnType:
+    """Resolves higher-order functions underneath a call.
+
+    This function is responsible for ensuring that the postcondition of
+    `resolve_higher_order_functions` holds, as it is the only function of these
+    three that can return a `building_blocks.Call`. Before returning, it ensures
+    that the functional argument to any call it constructs is either a concrete
+    function (IE, a function which has no functional elements in its return
+    type) or a function which is essentially bound to a reference in the larger
+    AST.
+
+    Note that `_resolve_call` encodes the only potential performance problem
+    of this traversal--if creating a call to a resolved function still returns
+    a functional type, the block which represents this call must be retraversed
+    until the functional type is resolved. All the other traversal calls in
+    these private functions represent only a continuation of the original
+    preorder walk--if is the retraversals called out below that can cause
+    a rewalk of the same tree. As implemented, this entire transform is of
+    complexity (size of tree * (order of highest lambda + 1)) where a 0th-
+    order lambda is a function with nonfunctional return type, a 1st-order
+    lambda returns a 0th-order lambda, etc.
+
+    Args:
+      call: Instance of `building_blocks.Call` to transform.
+
+    Returns:
+      A transformed version of `call` satisfying the above, plus a boolean
+      indicating whether `call` was indeed transformed.
+
+    Raises:
+      TransformationError: If construction of the postcondition of the
+        top-level transformation fails.
+    """
+    resolved_fn, fn_modified = _resolve_higher_order_fns(call.function)
+    arg_modified = False
+    if call.argument is not None:
+      resolved_argument, arg_modified = _resolve_higher_order_fns(call.argument)
+    else:
+      resolved_argument = None
+
+    if resolved_fn.is_compiled_computation() or resolved_fn.is_intrinsic():
+      # Base case
+      return building_blocks.Call(
+          resolved_fn, resolved_argument), fn_modified or arg_modified
+
+    elif resolved_fn.is_lambda():
+      if not _contains_function(resolved_fn.result.type_signature):
+        # Not a higher order lambda, we are in our base case.
+        return building_blocks.Call(
+            resolved_fn, resolved_argument), fn_modified or arg_modified
+      if resolved_fn.parameter_name is None:
+        block_to_walk = resolved_fn.result
+      else:
+        block_to_walk = building_blocks.Block(
+            [(resolved_fn.parameter_name, resolved_argument)],
+            resolved_fn.result)
+      # Retraversal of already walked tree to resolve higher-order function.
+      resolved, _ = _resolve_higher_order_fns(block_to_walk)
+      return resolved, True
+    elif resolved_fn.is_block():
+      new_result = building_blocks.Call(resolved_fn.result, resolved_argument)
+      block_to_walk = building_blocks.Block(resolved_fn.locals, new_result)
+      if resolved_fn.result.is_lambda() or resolved_fn.result.is_intrinsic(
+      ) or resolved_fn.result.is_compiled_computation():
+        if resolved_fn.result.is_lambda() and not _contains_function(
+            resolved_fn.result.type_signature):
+          # Not a higher order lambda, we are in our base case.
+          return block_to_walk, fn_modified or arg_modified
+      # Retraversal of already walked tree to resolve higher-order function.
+      resolved, _ = _resolve_higher_order_fns(block_to_walk)
+      return resolved, True
+    else:
+      # In the case of a functional parameter or a tuple containing functions,
+      # resolved_fn may be a reference or a string of selections from
+      # references. Since we eagerly inline this does not represent an issue,
+      # but these are the only possible cases, so we check them here.
+      if not resolved_fn.is_reference():
+        comp_to_check = resolved_fn
+        while comp_to_check.is_selection():
+          comp_to_check = comp_to_check.source
+        if not comp_to_check.is_reference():
+          raise TransformationError(
+              'Unexpected state encountered in resolving higher-order '
+              'functions. This error represents a bug in the transformation '
+              'itself. At this point, every call should be only to functions '
+              'declared as parameters to uncalled functions, but encountered:\n'
+              '{}'.format(resolved_fn.formatted_representation()))
+      return building_blocks.Call(
+          resolved_fn, resolved_argument), fn_modified or arg_modified
+
+  def _resolve_higher_order_fns(
+      inner_comp: building_blocks.ComputationBuildingBlock
+  ) -> TransformReturnType:
+    """Internal switch to cover resolution of higher order functions.
+
+    This algorithm achieves higher order function resolution essentially by
+    replacing called functions with blocks binding their arguments, lazily
+    inlining the functional bindings that can be introduced by this procedure,
+    and continuing to walk the computation top-down. This function is designed
+    to be called in a preorder fashion on TFF ASTs, and therefore the functions
+    called out to from the body here handle their own preorder walks of the
+    AST. This pattern is used to avoid nasty infinite recursions if preorder
+    traversals go wrong.
+
+    Args:
+      inner_comp: Instance of `building_blocks.ComputationBuildingBlock` whose
+        higher-order functions we wish to resolve.
+
+    Returns:
+      A transformed version of `inner_comp` whose higher-order functions are as
+      resolved as possible.
+    """
+    if inner_comp.is_reference():
+      if _contains_function(inner_comp.type_signature):
+        return _resolve_functional_reference(inner_comp)
+      else:
+        return inner_comp, False
+    elif inner_comp.is_compiled_computation() or inner_comp.is_data(
+    ) or inner_comp.is_intrinsic() or inner_comp.is_placement():
+      # Concrete leaf nodes, nothing to resolve.
+      return inner_comp, False
+    elif inner_comp.is_selection():
+      if _contains_function(inner_comp.type_signature):
+        return _resolve_functional_selection(inner_comp)
+      else:
+        # We may still have higher-order functions hiding underneath, continue
+        # the walk.
+        resolved_source, source_modified = _resolve_higher_order_fns(
+            inner_comp.source)
+        return building_blocks.Selection(
+            resolved_source, name=inner_comp.name,
+            index=inner_comp.index), source_modified
+    elif inner_comp.is_block():
+      return _resolve_block(inner_comp)
+    elif inner_comp.is_call():
+      return _resolve_call(inner_comp)
+    elif inner_comp.is_struct():
+      elements = []
+      modified = False
+      for name, val in structure.iter_elements(inner_comp):
+        result, elem_modified = _resolve_higher_order_fns(val)
+        elements.append((name, result))
+        modified = modified or elem_modified
+      return building_blocks.Struct(elements), modified
+    elif inner_comp.is_lambda():
+      # We may have higher-order functions inside the lambda body; continue the
+      # traversal.
+      resolved_result, result_modified = _resolve_higher_order_fns(
+          inner_comp.result)
+      return building_blocks.Lambda(
+          parameter_name=inner_comp.parameter_name,
+          parameter_type=inner_comp.parameter_type,
+          result=resolved_result), result_modified
+    else:
+      raise NotImplementedError(
+          f'Unrecognized building block, type: {type(inner_comp)}')
+
+  return _resolve_higher_order_fns(comp)
+
+
+def uniquify_compiled_computation_names(comp):
+  """Replaces all the compiled computations names in `comp` with unique names.
+
+  This transform traverses `comp` postorder and replaces the name of all the
+  compiled computations found in `comp` with a unique name.
+
+  Args:
+    comp: The computation building block in which to perform the replacements.
+
+  Returns:
+    A new computation with the transformation applied or the original `comp`.
+
+  Raises:
+    TypeError: If types do not match.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+  name_generator = building_block_factory.unique_name_generator(None, prefix='')
+
+  def _should_transform(comp):
+    return comp.is_compiled_computation()
+
+  def _transform(comp):
+    if not _should_transform(comp):
+      return comp, False
+    transformed_comp = building_blocks.CompiledComputation(
+        comp.proto, next(name_generator))
+    return transformed_comp, True
+
+  return transformation_utils.transform_postorder(comp, _transform)
+
+
+def uniquify_reference_names(comp, name_generator=None):
+  """Replaces all the bound reference names in `comp` with unique names.
+
+  Notice that `uniquify_reference_names` simply leaves alone any reference
+  which is unbound under `comp`.
+
+  Args:
+    comp: The computation building block in which to perform the replacements.
+    name_generator: An optional generator to use for creating unique names.
+
+  Returns:
+    Returns a transformed version of comp inside of which all variable names
+    are guaranteed to be unique, and are guaranteed to not mask any unbound
+    names referenced in the body of `comp`.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+  # Passing `comp` to `unique_name_generator` here will ensure that the
+  # generated names conflict with neither bindings in `comp` nor unbound
+  # references in `comp`.
+  if name_generator is None:
+    name_generator = building_block_factory.unique_name_generator(comp)
+
+  class _RenameNode(transformation_utils.BoundVariableTracker):
+    """transformation_utils.SymbolTree node for renaming References in ASTs."""
+
+    def __init__(self, name, value):
+      super().__init__(name, value)
+      py_typecheck.check_type(name, str)
+      self.new_name = next(name_generator)
+
+    def __str__(self):
+      return 'Value: {}, name: {}, new_name: {}'.format(self.value, self.name,
+                                                        self.new_name)
+
+  def _transform(comp, context_tree):
+    """Renames References in `comp` to unique names."""
+    if comp.is_reference():
+      payload = context_tree.get_payload_with_name(comp.name)
+      if payload is None:
+        return comp, False
+      new_name = payload.new_name
+      return building_blocks.Reference(new_name, comp.type_signature,
+                                       comp.context), True
+    elif comp.is_block():
+      new_locals = []
+      for name, val in comp.locals:
+        context_tree.walk_down_one_variable_binding()
+        new_name = context_tree.get_payload_with_name(name).new_name
+        new_locals.append((new_name, val))
+      return building_blocks.Block(new_locals, comp.result), True
+    elif comp.is_lambda():
+      if comp.parameter_type is None:
+        return comp, False
+      context_tree.walk_down_one_variable_binding()
+      new_name = context_tree.get_payload_with_name(
+          comp.parameter_name).new_name
+      return building_blocks.Lambda(new_name, comp.parameter_type,
+                                    comp.result), True
+    return comp, False
+
+  symbol_tree = transformation_utils.SymbolTree(_RenameNode)
+  return transformation_utils.transform_postorder_with_symbol_bindings(
+      comp, _transform, symbol_tree)
+
+
+def group_block_locals_by_namespace(block):
+  """Partitions `block.locals` into classes which share namespaces.
+
+  That is, the computations in each class close over the same set of variables.
+  The sets of variables each class closes over is defined by the sequence of
+  variable bindings in the local_variables statement. That is, if the local
+  variables declare 'a' then 'b', and the variable 'x' is the top level unbound
+  ref, then this function will construct computation classes of the form:
+
+  [[all computations having only x as unbound],
+  [remaining computations having either a or x unbound],
+  [remaining computations having a, b, or x unbound]]
+
+  Args:
+    block: Instance of `building_blocks.Block`, whose local variables we wish to
+      partition in the manner described above.
+
+  Returns:
+    A list of lists, where each computation in the locals of `block` appears in
+    exactly one list, each inner list contains two-tuples (whose second elements
+    are the computations which share the same unbound variables and first
+    element is the variable name bound to this computation), and each
+    computation appears as early as possible. The order of the lists returned
+    is defined by the order of the variable indings in `block`, as described
+    above. In particular, the length of the outer list will always be the number
+    of variables declared in the block locals statement, plus one, and the sum
+    of the lengths of the inner lists will be identical to the number of local
+    variables declared.
+  """
+  py_typecheck.check_type(block, building_blocks.Block)
+  all_unbound_refs = transformation_utils.get_map_of_unbound_references(block)
+  top_level_unbound_ref = all_unbound_refs[block]
+  local_variables = block.locals
+
+  arg_classes = [top_level_unbound_ref]
+
+  for var, _ in local_variables:
+    final_arg_class = arg_classes[-1].copy()
+    final_arg_class.add(var)
+    arg_classes.append(final_arg_class)
+
+  comps_yet_to_partition = [
+      (name, comp, all_unbound_refs[comp]) for (name, comp) in local_variables
+  ]
+  comp_classes = []
+  for args in arg_classes:
+    cls = []
+    selected_indices = []
+    for idx, (name, comp, refs) in enumerate(comps_yet_to_partition):
+      if refs.issubset(args):
+        cls.append((name, comp))
+        selected_indices.append(idx)
+    remaining_comps = []
+    for idx, comp_tuple in enumerate(comps_yet_to_partition):
+      if idx not in selected_indices:
+        remaining_comps.append(comp_tuple)
+    comps_yet_to_partition = remaining_comps
+    comp_classes.append(cls)
+
+  return comp_classes
+
+
+def insert_called_tf_identity_at_leaves(comp):
+  r"""Inserts an identity TF graph called on References under `comp`.
+
+  For ease of reasoning about and proving completeness of TFF-to-TF
+  translation capabilities, we will maintain the invariant that
+  we constantly pass up the AST instances of the pattern:
+
+                                    Call
+                                  /      \
+              CompiledComputation         Reference
+
+  Any block of TFF reducible to TensorFlow must have a functional type
+  signature without nested functions, and therefore we may assume there is
+  a single Reference in the code we are parsing to TF. We continually push logic
+  into the compiled computation as we make our way up the AST, preserving the
+  pattern above; when we hit the lambda that binds this reference, we simply
+  unwrap the call.
+
+  To perform this process, we must begin with this pattern; otherwise there
+  may be some arbitrary TFF constructs present between any occurrences of TF
+  and the arguments to which they are applied, e.g. arbitrary selections from
+  and nesting of tuples containing references.
+
+  `insert_called_tf_identity_at_leaves` ensures that the pattern above is
+  present at the leaves of any portion of the TFF AST which is destined to be
+  compiled into TensorFlow; that is, any `building_blocks.Reference` whose type
+  is compatible with stamping into a TensorFlow graph.
+
+  Args:
+    comp: Instance of `building_blocks.ComputationBuildingBlock` whose AST we
+      will traverse, replacing appropriate instances of
+      `building_blocks.Reference` with graphs representing the identity function
+      of the appropriate type called on the same reference. `comp` must declare
+      a parameter and result type which are both able to be stamped in to a
+      TensorFlow graph.
+
+  Returns:
+    A possibly modified  version of `comp`, where any references now have a
+    parent of type `building_blocks.Call` with function an instance
+    of `building_blocks.CompiledComputation`.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+
+  if comp.is_compiled_computation():
+    return comp, False
+
+  def _should_decorate(comp):
+    return (comp is not None and comp.is_reference() and
+            type_analysis.is_tensorflow_compatible_type(comp.type_signature))
+
+  def _decorate(comp):
+    identity_function = building_block_factory.create_compiled_identity(
+        comp.type_signature)
+    return building_blocks.Call(identity_function, comp)
+
+  def _decorate_if_reference_without_graph(comp):
+    """Decorates references under `comp` if necessary."""
+    if (comp.is_struct() and any(_should_decorate(x) for x in comp)):
+      elems = []
+      for x in structure.iter_elements(comp):
+        if _should_decorate(x[1]):
+          elems.append((x[0], _decorate(x[1])))
+        else:
+          elems.append((x[0], x[1]))
+      return building_blocks.Struct(elems), True
+    elif (comp.is_call() and not comp.function.is_compiled_computation() and
+          _should_decorate(comp.argument)):
+      arg = _decorate(comp.argument)
+      return building_blocks.Call(comp.function, arg), True
+    elif comp.is_selection() and _should_decorate(comp.source):
+      return building_blocks.Selection(
+          _decorate(comp.source), name=comp.name, index=comp.index), True
+    elif comp.is_lambda() and _should_decorate(comp.result):
+      return building_blocks.Lambda(comp.parameter_name, comp.parameter_type,
+                                    _decorate(comp.result)), True
+    elif comp.is_block() and (any(_should_decorate(x[1]) for x in comp.locals)
+                              or _should_decorate(comp.result)):
+      new_locals = []
+      for x in comp.locals:
+        if _should_decorate(x[1]):
+          new_locals.append((x[0], _decorate(x[1])))
+        else:
+          new_locals.append((x[0], x[1]))
+      new_result = comp.result
+      if _should_decorate(comp.result):
+        new_result = _decorate(comp.result)
+      return building_blocks.Block(new_locals, new_result), True
+    return comp, False
+
+  return transformation_utils.transform_postorder(
+      comp, _decorate_if_reference_without_graph)
+
+
+def strip_placement(comp):
+  """Strips `comp`'s placement, returning a non-federated computation.
+
+  For this function to complete successfully `comp` must:
+  1) contain at most one federated placement.
+  2) not contain intrinsics besides `apply`, `map`, `zip`, and `federated_value`
+  3) not contain `building_blocks.Data` of federated type.
+
+  Args:
+    comp: Instance of `building_blocks.ComputationBuildingBlock` satisfying the
+      assumptions above.
+
+  Returns:
+    A modified version of `comp` containing no intrinsics nor any federated
+    types or values.
+
+  Raises:
+    TypeError: If `comp` is not a building block.
+    ValueError: If conditions (1), (2), or (3) above are unsatisfied.
+  """
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+  placement = None
+  name_generator = building_block_factory.unique_name_generator(comp)
+
+  def _ensure_single_placement(new_placement):
+    nonlocal placement
+    if placement is None:
+      placement = new_placement
+    elif placement != new_placement:
+      raise ValueError(
+          'Attempted to `strip_placement` from computation containing '
+          'multiple different placements.\n'
+          f'Found placements `{placement}` and `{new_placement}` in '
+          f'comp:\n{comp.compact_representation()}')
+
+  def _remove_placement_from_type(type_spec):
+    if type_spec.is_federated():
+      _ensure_single_placement(type_spec.placement)
+      return type_spec.member, True
+    else:
+      return type_spec, False
+
+  def _remove_reference_placement(comp):
+    """Unwraps placement from references and updates unbound reference info."""
+    new_type, _ = type_transformations.transform_type_postorder(
+        comp.type_signature, _remove_placement_from_type)
+    return building_blocks.Reference(comp.name, new_type)
+
+  def _identity_function(arg_type):
+    """Creates `lambda x: x` with argument type `arg_type`."""
+    arg_name = next(name_generator)
+    val = building_blocks.Reference(arg_name, arg_type)
+    lam = building_blocks.Lambda(arg_name, arg_type, val)
+    return lam
+
+  def _call_first_with_second_function(fn_type, arg_type):
+    """Creates `lambda x: x[0](x[1])` with the provided ."""
+    arg_name = next(name_generator)
+    tuple_ref = building_blocks.Reference(arg_name, [fn_type, arg_type])
+    fn = building_blocks.Selection(tuple_ref, index=0)
+    arg = building_blocks.Selection(tuple_ref, index=1)
+    called_fn = building_blocks.Call(fn, arg)
+    return building_blocks.Lambda(arg_name, tuple_ref.type_signature, called_fn)
+
+  def _call_function(arg_type):
+    """Creates `lambda x: x()` argument type `arg_type`."""
+    arg_name = next(name_generator)
+    arg_ref = building_blocks.Reference(arg_name, arg_type)
+    called_arg = building_blocks.Call(arg_ref, None)
+    return building_blocks.Lambda(arg_name, arg_type, called_arg)
+
+  def _replace_intrinsics_with_functions(comp):
+    """Helper to remove intrinsics from the AST."""
+    tys = comp.type_signature
+
+    # These functions have no runtime behavior and only exist to adjust
+    # placement. They are replaced here with  `lambda x: x`.
+    identities = [
+        intrinsic_defs.FEDERATED_ZIP_AT_SERVER.uri,
+        intrinsic_defs.FEDERATED_ZIP_AT_CLIENTS.uri,
+        intrinsic_defs.FEDERATED_VALUE_AT_SERVER.uri,
+        intrinsic_defs.FEDERATED_VALUE_AT_CLIENTS.uri,
+    ]
+    if comp.uri in identities:
+      return _identity_function(tys.result.member)
+
+    # These functions all `map` a value and are replaced with
+    # `lambda args: args[0](args[1])
+    maps = [
+        intrinsic_defs.FEDERATED_MAP.uri,
+        intrinsic_defs.FEDERATED_MAP_ALL_EQUAL.uri,
+        intrinsic_defs.FEDERATED_APPLY.uri,
+    ]
+    if comp.uri in maps:
+      return _call_first_with_second_function(tys.parameter[0],
+                                              tys.parameter[1].member)
+
+    # `federated_eval`'s argument must simply be `call`ed and is replaced
+    # with `lambda x: x()`
+    evals = [
+        intrinsic_defs.FEDERATED_EVAL_AT_SERVER.uri,
+        intrinsic_defs.FEDERATED_EVAL_AT_CLIENTS.uri,
+    ]
+    if comp.uri in evals:
+      return _call_function(tys.parameter)
+
+    raise ValueError('Disallowed intrinsic: {}'.format(comp))
+
+  def _remove_lambda_placement(comp):
+    """Removes placement from Lambda's parameter."""
+    if comp.parameter_name is None:
+      new_parameter_type = None
+    else:
+      new_parameter_type, _ = type_transformations.transform_type_postorder(
+          comp.parameter_type, _remove_placement_from_type)
+    return building_blocks.Lambda(comp.parameter_name, new_parameter_type,
+                                  comp.result)
+
+  def _simplify_calls(comp):
+    """Unwraps structures introduced by removing intrinsics."""
+    zip_or_value_removed = (
+        comp.function.result.is_reference() and
+        comp.function.result.name == comp.function.parameter_name)
+    if zip_or_value_removed:
+      return comp.argument
+    else:
+      map_removed = (
+          comp.function.result.is_call() and
+          comp.function.result.function.is_selection() and
+          comp.function.result.function.index == 0 and
+          comp.function.result.argument.is_selection() and
+          comp.function.result.argument.index == 1 and
+          comp.function.result.function.source.is_reference() and
+          comp.function.result.function.source.name
+          == comp.function.parameter_name and
+          comp.function.result.function.source.is_reference() and
+          comp.function.result.function.source.name
+          == comp.function.parameter_name and comp.argument.is_struct())
+      if map_removed:
+        return building_blocks.Call(comp.argument[0], comp.argument[1])
+    return comp
+
+  def _transform(comp):
+    """Dispatches to helpers above."""
+    if comp.is_reference():
+      return _remove_reference_placement(comp), True
+    elif comp.is_intrinsic():
+      return _replace_intrinsics_with_functions(comp), True
+    elif comp.is_lambda():
+      return _remove_lambda_placement(comp), True
+    elif comp.is_call() and comp.function.is_lambda():
+      return _simplify_calls(comp), True
+    elif comp.is_data() and comp.type_signature.is_federated():
+      raise ValueError(f'Cannot strip placement from federated data: {comp}')
+    return comp, False
+
+  return transformation_utils.transform_postorder(comp, _transform)
+
+
+def transform_tf_call_ops_to_disable_grappler(comp):
+  """Performs grappler disabling on TensorFlow subcomputations."""
+  return _apply_transforms(
+      comp, compiled_computation_transforms.DisableCallOpGrappler())
+
+
+def transform_tf_add_ids(comp):
+  """Adds unique IDs to each TensorFlow subcomputations."""
+  return _apply_transforms(comp, compiled_computation_transforms.AddUniqueIDs())
