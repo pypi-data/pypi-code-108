@@ -1,0 +1,123 @@
+"""The setup installs Gauge CLI through pip."""
+from setuptools import setup
+from setuptools.command.install import install
+import json
+import platform
+import zipfile
+import os
+import sys
+
+
+_version = "1.4.3"
+_latest_version = ""
+
+
+class CustomInstallCommand(install):
+    """Customized setuptools install command to download and setup."""
+
+    _base_url = 'https://api.github.com/repos/getgauge/gauge/releases'
+    _arch_map = {"ia32": "x86", "x64": "x86_64", "arm64": "arm64"}
+    _os_map = {"Darwin": "darwin", "Linux": "linux", "Windows": "windows"}
+    _os_name = _os_map[platform.system()]
+
+    def _get_arch(self):
+        if 'arm64' in platform.platform():
+            return self._arch_map['arm64']
+        if '64' in platform.architecture()[0]:
+            return self._arch_map['x64']
+        else:
+            return self._arch_map['ia32']
+
+    def _get(self, url):
+        import requests
+        return requests.get(url)
+
+    def set_released_version(self):
+        global _latest_version
+        _latest_version = json.loads(self._get(self._base_url).text)[0]['tag_name'].replace('v', '')
+
+    def _get_gauge_file(self):
+        if self._os_name is 'win32':
+            return 'gauge.exe'
+        else:
+            return 'gauge'
+
+    def _gauge_package_fetch(self):
+        package_name = 'gauge-%s-%s.%s' % (_version,
+                                           self._os_name, self._get_arch())
+        package_url = self._base_url.replace('api.', '').replace(
+            '/repos', '') + '/download/v%s/%s.zip' % (_version, package_name)
+        r2 = self._get(package_url)
+        with open("gauge.zip", "wb") as download:
+            download.write(r2.content)
+
+    def gauge_main_to_path(self):
+        """Place Gauge CLI into Scripts Directory."""
+        self._gauge_package_fetch()
+        with zipfile.ZipFile('gauge.zip', "r") as z:
+            z.extractall()
+        target_path = os.path.join(
+            self.install_scripts, self._get_gauge_file())
+        source_path = os.path.join(os.getcwd(), self._get_gauge_file())
+        if os.path.isfile(target_path):
+            os.remove(target_path)
+        if os.path.isfile(source_path):
+            self.move_file(source_path, target_path)
+            if self._os_name is not "win32":
+                if sys.version_info[0] == 3:
+                    os.chmod(target_path, 0o755)
+                if sys.version_info[0] < 3:
+                    os.chmod(target_path, 755)
+
+    def run(self):
+        """Custom Install / Run Command."""
+        self.set_released_version()
+        self.gauge_main_to_path()
+        install.run(self)
+        print("\n***Gauge CLI - %s Installation Complete!***\n" % _version)
+        print("\n***Latest version of Gauge CLI is - %s***\n" % _latest_version)
+
+
+
+def readme():
+    """Get the README content for Long Description."""
+    with open('README.md') as readme_file:
+        return readme_file.read()
+
+
+setup(
+    name="getgauge-cli",
+    version=_version,
+    long_description=readme(),
+    long_description_content_type='text/markdown',
+    url='https://github.com/getgauge/gauge',
+    platforms=["Windows", "Linux", "Unix", "Mac OS-X"],
+    author='getgauge',
+    author_email='getgauge@googlegroups.com',
+    maintainer='getgauge',
+    license="Apache-2.0",
+    cmdclass={
+        'install': CustomInstallCommand,
+    },
+    classifiers=[
+        "License :: OSI Approved :: Apache Software License",
+        "Development Status :: 5 - Production/Stable",
+        "Topic :: Internet",
+        "Topic :: Scientific/Engineering",
+        "Topic :: Software Development",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: Unix",
+        "Operating System :: MacOS",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.4",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
+    ],
+    install_requires=[
+        'requests',
+        'markdown',
+    ],
+    setup_requires=['requests']
+)
