@@ -1,0 +1,1 @@
+from DecenTT.IPFS.locales.env_config import getIPFSHost
