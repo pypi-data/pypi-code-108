@@ -1,0 +1,313 @@
+# -*- coding: utf-8 -*-
+
+import sys
+import pkg_resources
+import os
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+from cartopy.io.shapereader import Reader
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from matplotlib.text import TextPath
+from matplotlib.patches import PathPatch
+import matplotlib.patheffects as mpatheffects
+from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
+
+import metdig.graphics.lib.utility as utl
+
+pkg_name = 'metdig.graphics'
+
+def time_ticks_formatter(ax,times,if_minor=False):
+    times=pd.to_datetime(times)
+    hours_total=(times[-1]-times[0]).total_seconds()/3600.
+    if(hours_total > 84):
+        ax.xaxis.set_major_locator(mpl.dates.HourLocator(byhour=(8, 20)))  # 单位是小时
+        if if_minor:
+            ax.xaxis.set_minor_locator(mpl.dates.HourLocator(byhour=(8, 14, 20, 2)))  # 单位是小时
+    else:
+        ax.xaxis.set_major_locator(mpl.dates.HourLocator(byhour=(8, 14, 20, 2)))  # 单位是小时
+        if if_minor:
+            ax.xaxis.set_minor_locator(mpl.dates.HourLocator(byhour=(8, 11, 14, 17, 20, 23, 2, 5)))  # 单位是小时
+
+
+
+def add_ticks(ax, xticks=None, yticks=None, labelsize=14, crs=ccrs.PlateCarree(), add_grid=False ,**kwargs):
+    if xticks is not None:
+        ax.set_xticks(xticks, crs=crs)
+        lon_formatter = LongitudeFormatter(zero_direction_label=False)
+        ax.xaxis.set_major_formatter(lon_formatter)
+        ax.tick_params(axis='x', labelsize=labelsize, **kwargs)
+    if yticks is not None:
+        ax.set_yticks(yticks, crs=crs)
+        lat_formatter = LatitudeFormatter()
+        ax.yaxis.set_major_formatter(lat_formatter)
+        ax.tick_params(axis='y', labelsize=labelsize, **kwargs)
+    
+    if add_grid:
+        ax.gridlines(crs=crs, xlocs=xticks, ylocs=yticks, linewidth=1, color='gray', alpha=0.5, linestyle='--', zorder=100)
+    
+
+def add_china_map_2cartopy_public(ax, name='province', facecolor='none',
+                                  edgecolor='c', lw=2,crs=ccrs.PlateCarree(), **kwargs):
+    """
+    Draw china boundary on cartopy map.
+    :param ax: matplotlib axes instance.
+    :param name: map name.
+    :param facecolor: fill color, default is none.
+    :param edgecolor: edge color.
+    :param lw: line width.
+    :return: None
+    """
+
+    # map name
+    names = {'nation': "NationalBorder", 
+             'province': "Province",
+            #  'county': "County",  # 无资源，暂时注释
+             'river': "hyd1_4l",
+             'river_high': "hyd2_4l",
+             'coastline': 'ne_10m_coastline'}
+
+    # get shape filename
+    shpfile = pkg_resources.resource_filename(pkg_name, "resources/shapefile/" + names[name] + ".shp")
+
+    # add map
+    ax.add_geometries(
+        Reader(shpfile).geometries(), 
+        facecolor=facecolor, edgecolor=edgecolor, lw=lw,crs=crs, **kwargs)
+
+
+def adjust_map_ratio(ax, map_extent=None, datacrs=None):
+    '''
+    adjust the map_ratio in the projection of AlbersEqualArea in different area
+    :ax = Axes required
+    :map_extent=map_extent required
+    :datacrs data projection reqired
+    :return none
+    '''
+    map_ratio = (map_extent[1] - map_extent[0]) / (map_extent[3] - map_extent[2])
+    ax.set_extent(map_extent, crs=datacrs)
+    d_y = map_extent[3] - map_extent[2]
+    map_extent2 = map_extent
+    for i in range(0, 10000):
+        map_ratio_real = (ax.get_extent()[1] - ax.get_extent()[0]) / 2. / ((ax.get_extent()[3] - ax.get_extent()[2]) / 2.)
+        if(abs(map_ratio_real - map_ratio) < 0.001):
+            break
+        if(i == 0):
+            if(map_ratio_real - map_ratio > 0):
+                d_y = d_y + d_y * 0.001
+            if(map_ratio_real - map_ratio <= 0):
+                d_y = d_y - d_y * 0.001
+            bottom = (map_extent[2] + map_extent[3]) / 2 - d_y / 2
+            top = (map_extent[2] + map_extent[3]) / 2 + d_y / 2
+            map_extent2 = [map_extent[0], map_extent[1], bottom, top]
+        if(i > 0):
+            d_y = map_extent2[3] - map_extent2[2]
+            if(map_ratio_real - map_ratio > 0):
+                d_y = d_y + d_y * 0.001
+            if(map_ratio_real - map_ratio <= 0):
+                d_y = d_y - d_y * 0.001
+            bottom = (map_extent2[2] + map_extent2[3]) / 2 - d_y / 2
+            top = (map_extent2[2] + map_extent2[3]) / 2 + d_y / 2
+            map_extent2 = [map_extent2[0], map_extent2[1], bottom, top]
+        ax.set_extent(map_extent2, crs=datacrs)
+    return map_extent2
+
+
+def add_cartopy_background(ax, name='RD'):
+    # http://earthpy.org/cartopy_backgroung.html
+    # C:\ProgramData\Anaconda3\Lib\site-packages\cartopy\data\raster\natural_earth
+    bg_dir = pkg_resources.resource_filename(pkg_name, 'resources/backgrounds/')
+    os.environ["CARTOPY_USER_BACKGROUNDS"] = bg_dir
+    ax.background_img(name=name, resolution='high')
+
+
+def add_city_on_map(ax, map_extent=None, size=7, small_city=False, zorder=10,city_type='provincial_capital',city_slt=None, **kwargs):
+    """
+    :param ax: `matplotlib.figure`, The `figure` instance used for plotting
+    :param x: x position padding in pixels
+    :city_type: str, provincial_capital or county
+    :city_slt: list, 指定显示的城市
+    :param kwargs:
+    :return: `matplotlib.image.FigureImage`
+             The `matplotlib.image.FigureImage` instance created.
+    """
+    if map_extent is None:
+        map_extent = list(ax.get_xlim()) + list(ax.get_ylim())
+
+    dlon = map_extent[1] - map_extent[0]
+    dlat = map_extent[3] - map_extent[2]
+
+    fnames={'provincial_capital':'city_province.csv',
+           'county':'county.csv'}
+    try:
+        fname = fnames[city_type]
+        fpath = "resources/stations/" + fname
+    except KeyError:
+        raise ValueError('can not find the file city_province.000 in the resources')
+
+    city = pd.read_csv(pkg_resources.resource_filename(pkg_name, fpath), encoding='gbk', comment='#')
+
+    lon = city['lon'].values
+    lat = city['lat'].values
+    city_names = city['Name'].values
+
+    # 步骤一（替换sans-serif字体） #得删除C:\Users\HeyGY\.matplotlib 然后重启vs，刷新该缓存目录获得新的字体
+    plt.rcParams['font.sans-serif'] = ['SimHei']
+    plt.rcParams['axes.unicode_minus'] = False  # 步骤二（解决坐标轴负数的负号显示问题）
+
+    if(city_type == 'provincial_capital'):
+        for i in range(0, len(city_names)):
+            if((lon[i] > map_extent[0] + dlon * 0.05) and (lon[i] < map_extent[1] - dlon * 0.05) and
+            (lat[i] > map_extent[2] + dlat * 0.05) and (lat[i] < map_extent[3] - dlat * 0.05)):
+                if (city_slt == None):
+                    if(city_names[i] != '香港' and city_names[i] != '南京' and city_names[i] != '石家庄' and city_names[i] != '天津'):
+                        r = city_names[i]
+                        t = ax.text(lon[i], lat[i], city_names[i], family='SimHei', ha='right', va='top', size=size, zorder=zorder, **kwargs)
+                    else:
+                        t = ax.text(lon[i], lat[i], city_names[i], family='SimHei', ha='left', va='top', size=size, zorder=zorder, **kwargs)
+                    t.set_path_effects([mpatheffects.Stroke(linewidth=3, foreground='#D9D9D9'),
+                                        mpatheffects.Normal()])
+                    ax.scatter(lon[i],lat[i], c='black', s=25, zorder=zorder, **kwargs)
+                else:
+                    for islt in city_slt:
+                        if(city_names[i]==islt):
+                            t = ax.text(lon[i], lat[i], city_names[i], family='SimHei', ha='left', va='top', size=size, zorder=zorder, **kwargs)
+                            t.set_path_effects([mpatheffects.Stroke(linewidth=3, foreground='#D9D9D9'),
+                                        mpatheffects.Normal()])
+                            ax.scatter(lon[i],lat[i], c='black', s=25, zorder=zorder, **kwargs)
+    else:
+        for i in range(0, len(city_names)):
+            if((lon[i] > map_extent[0] + dlon * 0.05) and (lon[i] < map_extent[1] - dlon * 0.05) and
+            (lat[i] > map_extent[2] + dlat * 0.05) and (lat[i] < map_extent[3] - dlat * 0.05)):
+                if (city_slt == None):
+                    t = ax.text(lon[i]+(map_extent[1]-map_extent[0])*0.01, lat[i], city_names[i], family='SimHei', ha='left', va='top', size=size, zorder=zorder, **kwargs)
+                    t.set_path_effects([mpatheffects.Stroke(linewidth=3, foreground='#D9D9D9'),
+                                        mpatheffects.Normal()])
+                    ax.scatter(lon[i], lat[i], c='black', s=25, zorder=zorder, **kwargs)
+                else:
+                    for islt in city_slt:
+                        if(city_names[i]==islt):
+                            t = ax.text(lon[i], lat[i], city_names[i], family='SimHei', ha='left', va='top', size=size, zorder=zorder, **kwargs)
+                            t.set_path_effects([mpatheffects.Stroke(linewidth=3, foreground='#D9D9D9'),
+                                        mpatheffects.Normal()])
+                            ax.scatter(lon[i], lat[i], c='black', s=25, zorder=zorder, **kwargs)
+    return
+
+def add_south_china_sea_plt(map_extent=[107, 120, 2, 20], pos=[0.1, 0.1, .2, .4], **kwargs):
+
+    # draw main figure
+    plotcrs = ccrs.PlateCarree(central_longitude=100.)
+    ax = plt.axes(pos, projection=plotcrs)
+    datacrs = ccrs.PlateCarree()
+    ax.set_extent(map_extent, crs=datacrs)
+    ax.coastlines('50m', edgecolor='black', linewidth=0.5, zorder=50)
+    add_china_map_2cartopy_public(ax, name='nation', edgecolor='black', lw=0.8, zorder=40)
+    '''
+    ax.add_feature(cfeature.OCEAN)
+    add_cartopy_background(ax, name='RD')  # ax.background_img(name='RD', resolution='high')
+    '''
+    ax.add_feature(cfeature.LAND, facecolor='#EBDBB2')
+    ax.add_feature(cfeature.OCEAN, facecolor='#C8EBFA')
+    return ax
+
+
+def add_south_china_sea_png(pos=[0.1, 0.1, .2, .4], name='simple', **kwargs):
+    fname_suffix = {
+        'simple': 'simple.png',
+        'RD': 'RD.png',
+        'white': 'white.png',
+    }
+    try:
+        fname = fname_suffix[name]
+        fpath = "resources/south_china/" + fname
+    except KeyError:
+        raise ValueError('Unknown south_china name or selection')
+    img = plt.imread(pkg_resources.resource_filename(pkg_name, fpath))
+
+    ax = plt.axes(pos)
+    ax.imshow(img, zorder=0)
+    ax.axis('off')
+    return ax
+
+def create_south_china_png(outfile='./south_china.png'):
+    # 创建南海静态图
+    fig = plt.figure(figsize=(0.9, 1.24))
+    ax = fig.add_subplot(projection=ccrs.PlateCarree())
+    datacrs = ccrs.PlateCarree()
+    ax.set_extent([107, 120, 2, 20], crs=datacrs)
+    ax.coastlines('50m', edgecolor='black', linewidth=0.5, zorder=50)
+    add_china_map_2cartopy_public(ax, name='nation', edgecolor='black', lw=0.8, zorder=40)
+
+    # ax.add_feature(cfeature.OCEAN)
+    # add_cartopy_background(ax, name='RD')  # ax.background_img(name='RD', resolution='high')
+    ax.add_feature(cfeature.LAND, facecolor='#EBDBB2')
+    ax.add_feature(cfeature.OCEAN, facecolor='#C8EBFA')
+
+    from metdig.graphics.lib.utility import get_imgbuf_from_fig
+    import PIL
+    imagebuf = get_imgbuf_from_fig(fig)
+    imagebuf = imagebuf[2:-2, 2:-2, :] # 去掉2个像素的黑边框
+    PIL.Image.fromarray(imagebuf.astype(np.uint8), mode='RGBA').save(outfile)
+
+    # plt.savefig('./south_china.png', dpi=200, bbox_inches='tight')
+
+    plt.close()
+
+
+def add_city_values_on_map(ax, data, map_extent=None, size=13, zorder=10, cmap=None, transform=ccrs.PlateCarree(), small_city=False,**kwargs):
+    
+    if map_extent is None:
+        map_extent = list(ax.get_xlim()) + list(ax.get_ylim())
+        
+    dlon = map_extent[1] - map_extent[0]
+    dlat = map_extent[3] - map_extent[2]
+    # province city
+    try:
+        if(small_city):
+            fname = 'county.csv'
+        else:
+            fname = 'city_province.csv'
+        fpath = "resources/stations/" + fname
+    except KeyError:
+        raise ValueError('can not find the file city_province.csv in the resources')
+
+    city = pd.read_csv(pkg_resources.resource_filename(pkg_name, fpath), encoding='gbk', comment='#')
+
+    lon = city['lon'].values
+    lat = city['lat'].values
+    city_names = city['Name'].values
+
+    number_city = data.interp(lon=('points', lon), lat=('points', lat))
+
+    # 步骤一（替换sans-serif字体） #得删除C:\Users\HeyGY\.matplotlib 然后重启vs，刷新该缓存目录获得新的字体
+    plt.rcParams['font.sans-serif'] = ['SimHei']
+    plt.rcParams['axes.unicode_minus'] = False  # 步骤二（解决坐标轴负数的负号显示问题）
+    if(small_city):
+        for i in range(0, len(city_names)):
+            if((lon[i] > map_extent[0] + dlon * 0.05) and (lon[i] < map_extent[1] - dlon * 0.05) and
+            (lat[i] > map_extent[2] + dlat * 0.05) and (lat[i] < map_extent[3] - dlat * 0.05)):
+                num = ax.text(lon[i],lat[i],
+                            '%.1f' % np.squeeze(number_city.values)[i],
+                            family='SimHei', ha='left', va='bottom', size=size, zorder=zorder, transform=transform, **kwargs)
+                num.set_path_effects([mpatheffects.Stroke(linewidth=3, foreground='#D9D9D9'),
+                                    mpatheffects.Normal()])
+    else:                                
+        for i in range(0, len(city_names)):
+            if((lon[i] > map_extent[0] + dlon * 0.05) and (lon[i] < map_extent[1] - dlon * 0.05) and
+            (lat[i] > map_extent[2] + dlat * 0.05) and (lat[i] < map_extent[3] - dlat * 0.05)):
+                if((np.array(['香港', '南京', '石家庄', '天津', '济南', '上海']) != city_names[i]).all()):
+                    r = city_names[i]
+                    num = ax.text(lon[i],lat[i],
+                                '%.1f' % np.squeeze(number_city.values)[i],
+                                family='SimHei', ha='right', va='bottom', size=size, zorder=zorder, transform=transform, **kwargs)
+                else:
+                    num = ax.text(lon[i],lat[i],
+                                '%.1f' % np.squeeze(number_city.values)[i],
+                                family='SimHei', ha='left', va='bottom', size=size, zorder=zorder, transform=transform, **kwargs)
+                num.set_path_effects([mpatheffects.Stroke(linewidth=3, foreground='#D9D9D9'),
+                                    mpatheffects.Normal()])
+    return
