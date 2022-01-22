@@ -1,0 +1,1 @@
+from .ezpub import main
