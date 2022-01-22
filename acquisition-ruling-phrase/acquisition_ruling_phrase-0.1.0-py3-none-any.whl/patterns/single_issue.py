@@ -1,0 +1,22 @@
+single_issue = r"""
+    ^
+    \s*
+    (
+        (Verily,\s+the)|
+        (The)
+    )
+    \s+
+    (
+        (
+            main|
+            basic
+        )
+        \s+
+    )?
+    issue
+    \s+
+    (
+        (in\s+this\s+case)|
+        (is\s+whether\s+or\s+not)
+    )
+"""

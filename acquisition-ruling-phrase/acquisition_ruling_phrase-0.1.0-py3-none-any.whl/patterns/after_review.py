@@ -1,0 +1,22 @@
+after_review = r"""
+    (
+        (After\s+a)|
+        Upon
+    )
+    \s+
+    (
+        careful|
+        thorough
+    )
+    \s+
+    review
+    \s+
+    of
+    \s+
+    the
+    \s+
+    (
+        record|
+        petition
+    )s?
+"""

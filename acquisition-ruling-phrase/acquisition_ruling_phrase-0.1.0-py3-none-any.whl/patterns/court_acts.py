@@ -1,0 +1,35 @@
+court_acts = r"""
+        ^\s* # possible space before "The"
+        (
+            (This\s+Court)|
+            (The\s+Court)|
+            We
+        )\s+
+        (
+            den(y|ies)|
+            finds?|
+            grants?
+        )\s+
+        (
+            (no\s+)?
+            merit\s+
+            in\s+
+        )?
+        (th(e|is)\s+)?
+        (
+            instant\s+|
+            present\s+
+        )?
+        (petitioners'\s+)?
+        (
+            [Pp]etition|
+            [Aa]ppeal|
+            motion|
+            contention
+        )
+        \s*
+        (to\s+be)?
+        (without\s+merit)?
+        (partially\s+with\s+merit)?
+        (for\s+lack\s+of\s+merit)?
+    """
