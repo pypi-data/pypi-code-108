@@ -1,0 +1,21 @@
+import FileProvider
+from PyObjCTools.TestSupport import TestCase, min_os_level
+
+
+class TestNSFileProviderDomain(TestCase):
+    @min_os_level("11.0")
+    def test_constants11_0(self):
+        self.assertIsInstance(FileProvider.NSFileProviderDomainDidChange, str)
+
+        self.assertEqual(
+            FileProvider.NSFileProviderDomainTestingModeAlwaysEnabled, 1 << 0
+        )
+        self.assertEqual(
+            FileProvider.NSFileProviderDomainTestingModeInteractive, 1 << 1
+        )
+
+    @min_os_level("11.0")
+    def test_methods11_0(self):
+        self.assertResultIsBOOL(FileProvider.NSFileProviderDomain.isDisconnected)
+        self.assertResultIsBOOL(FileProvider.NSFileProviderDomain.userEnabled)
+        self.assertResultIsBOOL(FileProvider.NSFileProviderDomain.isHidden)
