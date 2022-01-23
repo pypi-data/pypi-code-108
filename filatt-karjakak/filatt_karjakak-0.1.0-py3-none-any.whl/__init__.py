@@ -1,0 +1,1 @@
+from .filatt import main
