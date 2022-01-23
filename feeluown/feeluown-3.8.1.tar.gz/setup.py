@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+
+from setuptools import setup, find_packages
+from os import path
+
+import feeluown
+
+current_directory = path.abspath(path.dirname(__file__))
+with open(path.join(current_directory, 'README.md'), encoding='utf-8') as f:
+    long_description = f.read()
+
+
+setup(
+    name='feeluown',
+    version=feeluown.__version__,
+    description='*nix music player',
+    long_description=long_description,
+    long_description_content_type='text/markdown',
+    license="GPL-3.0",
+    author='feeluown',
+    author_email='yinshaowen241@gmail.com',
+    packages=find_packages(exclude=('tests*',)),
+    py_modules=['mpv', 'mpv_old'],
+    package_data={
+        '': ['nowplaying/linux/*.xml',
+             'gui/assets/icons/*.png',
+             'gui/assets/icons/*.ico',
+             'gui/assets/icons/*.icns',
+             'gui/assets/themes/*.qss',
+             'gui/assets/themes/*.colors',
+             ]
+    },
+    python_requires=">=3.8",
+    url='https://github.com/feeluown/FeelUOwn',
+    keywords=['media', 'player', 'application', 'PyQt5', 'Python 3'],
+    classifiers=[
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3 :: Only',
+        'Environment :: X11 Applications :: Qt',
+        "Topic :: Multimedia :: Sound/Audio",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "License :: OSI Approved :: GNU General Public License v3 (GPLv3)"
+    ],
+    # FIXME: depends on PyQt5
+    # - PyQt5.QtWidgets/QtCore/QtGui
+    # - PyQt5.QtSvg
+    # - PyQt5.QtOpenGL
+    #
+    # The feeluown.compat module will choose the right package
+    # for different python version
+    install_requires=[
+        'janus',
+        'requests',
+        'qasync',
+        'tomlkit',
+        'packaging',
+        'pydantic>=1.8.1',
+    ],
+    extras_require={
+        'battery': ['fuo-local>=0.2.1',
+                    'fuo-netease>=0.4.2',
+                    'fuo-qqmusic>=0.2',
+                    'fuo-kuwo>=0.1.1',
+                    ],
+        'macOS': ['pyobjc-framework-Cocoa', 'pyobjc-framework-Quartz'],
+        'win32': ['pyshortcuts'],
+        'webengine': ['PyQtWebEngine'],
+        'dev': [
+            # lint
+            'flake8',
+            'pylint',
+            'mypy',
+            # pyqt5-stubs seems more accurate than the stubs packaged in PyQt5 package.
+            # For example, the stubs in PyQt5 has wrong type hint for Qt.ItemIsSelectable.
+            # Some pyqt5 package installed by system package manager may not contain stubs.
+            'pyqt5-stubs',
+
+            # unittest
+            'pytest>=5.4.0',
+            'pytest-runner',
+            'pytest-cov',
+            'pytest-asyncio',
+            'pytest-qt',
+            'pytest-mock',
+            'pytest-benchmark>=3.4.1',
+
+            # docs
+            'sphinx',
+            'sphinx_rtd_theme',
+        ],
+    },
+    entry_points={
+        'console_scripts': [
+            "feeluown=feeluown.__main__:main",
+            "fuo=feeluown.__main__:main",
+            "feeluown-genicon=feeluown.cli.install:generate_icon",
+            # "feeluown-update=feeluown.install:update"
+        ]
+    },
+)
