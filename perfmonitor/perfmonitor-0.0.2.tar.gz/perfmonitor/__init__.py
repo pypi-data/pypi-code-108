@@ -1,0 +1,1 @@
+from perfmonitor.main import run as monitor_cli
