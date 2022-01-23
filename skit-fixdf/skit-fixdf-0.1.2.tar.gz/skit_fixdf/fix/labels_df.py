@@ -1,0 +1,272 @@
+import json
+import os
+import re
+import tempfile
+from datetime import datetime
+from typing import List, Optional
+
+import pandas as pd
+import pytz
+import requests
+from tqdm import tqdm
+
+from skit_fixdf import constants as const
+from skit_fixdf.fix.df import (
+    fix_datetime,
+    read_df,
+    remove_columns,
+    rename_columns,
+    reorder_cols,
+)
+
+
+def make_intent_label_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Make intent label df.
+    :param df: Dataframe.
+    :return: Dataframe.
+    :rtype: pd.DataFrame
+    """
+    df = df[[const.ID, const.TAG]].copy()
+    for i, row in tqdm(df.iterrows(), total=len(df), desc="Make intent label df."):
+        tag_objects = json.loads(row[const.TAG])
+        tags = [tag[const.TYPE] for tag in tag_objects]
+        if tags:
+            head, _ = tags[0], tags[1:]
+            df.at[i, const.INTENT] = head
+    return df[[const.ID, const.INTENT]]
+
+
+# ==========================================================================================
+# TODO: This section should be deprecated.
+# We are adding it here temporarily because of problems with the tagging interface.
+# Once True values are available on the interface, we will let this go.
+# Not focusing on code quality for the same reason.
+
+# @deprecate
+def detect_language(line):
+    line = re.sub(r"[^a-zA-Z\u0900-\u097F]+", " ", line)
+    maxchar = max(line)
+    if "\u0900" <= maxchar <= "\u097f":
+        return "hi"
+    elif "a" <= maxchar <= "z":
+        return "en"
+    return None
+
+
+# @deprecate
+def get_entities_from_duckling(duckling_url, text, lang, reftime, type_):
+    if not text or not lang:
+        return None
+
+    timezone = "Asia/Kolkata"  # Should be UTC but this is needed internally.
+    # Not fixing because this function isn't required.
+
+    payload = {
+        const.TEXT: text,
+        const.LOCALE: f"{lang}_IN",  # this piece is otherwise problematic (hardcoded "IN")
+        # but we want to let go of this function altogether.
+        const.TIMEZONE: timezone,
+        const.DIMS: json.dumps([type_]),
+        const.REFTIME: reftime,
+        const.LATENT: False,
+    }
+
+    timezone = pytz.timezone(timezone)
+    value = None
+    response = requests.post(
+        duckling_url,
+        data=payload,
+        timeout=5,
+    )
+
+    if response.status_code == 200:
+        entities_list = response.json()
+        print(entities_list)
+        if entities_list:
+            entity = entities_list[0]
+            value_store = entity.get(const.VALUE, {})
+            if const.VALUE in value_store:
+                value = value_store[const.VALUE]
+            elif const.FROM in value_store and const.TO in value_store:
+                value = {
+                    const.FROM: value_store.get(const.FROM),
+                    const.TO: value_store.get(const.TO),
+                }
+            elif const.FROM in value_store:
+                value = {const.FROM: value_store.get(const.FROM)}
+            elif const.TO in value_store:
+                value = {const.TO: value_store.get(const.TO)}
+
+            if entity[const.DIM] == const.DURATION:
+                normalized_value = entity.get(const.VALUE, {}).get(const.NORMALIZED, {})
+                if normalized_value.get(const.UNIT) == const.SECOND:
+                    value = reftime + normalized_value.get(const.VALUE)
+                    try:
+                        value = datetime.fromtimestamp(value / 1000, timezone)
+                        value = value.isoformat()
+                    except ValueError:
+                        value = None
+    return value
+
+
+# @deprecate
+def make_entity_label_df(df: pd.DataFrame, duckling_url: str) -> pd.DataFrame:
+    """
+    Make entity label df.
+    :param df: Dataframe.
+    :return: Dataframe.
+    :rtype: pd.DataFrame
+    """
+    df = df[[const.ID, const.TAG, const.LANGUAGE_CODE, const.REFTIME]].copy()
+    for i, row in tqdm(
+        df.iterrows(), total=len(df), desc="making duckling hits to get entity values."
+    ):
+        tags = json.loads(row[const.TAG])
+        evaluated_tags = []
+        for tag in tags:
+            if not tag[const.TYPE] or not tag[const.TEXT]:
+                continue
+            type_ = None
+            value = None
+            if tag[const.TYPE].lower() in const.SUPPORTED_ENTITIES:
+                type_ = tag[const.TYPE].lower()
+                reftime = row[const.REFTIME]
+                timestamp = datetime.fromisoformat(reftime).timestamp()
+                unix_epoch = int(timestamp * 1000)
+                language_code = (
+                    row[const.LANGUAGE_CODE]
+                    if not pd.isna(row[const.LANGUAGE_CODE])
+                    else detect_language(tag[const.TEXT])
+                )
+                value = get_entities_from_duckling(
+                    duckling_url,
+                    tag[const.TEXT],
+                    language_code,
+                    unix_epoch,
+                    tag[const.TYPE],
+                )
+            else:
+                type_ = tag[const.TYPE]
+                value = tag[const.TEXT]
+
+            if type_ and value:
+                evaluated_tags.append(
+                    {
+                        const.TEXT: tag[const.TEXT],
+                        const.TYPE: type_,
+                        const.SCORE: tag.get(const.SCORE, 0),
+                        const.VALUE: value,
+                    }
+                )
+        df.at[i, const.ENTITIES] = json.dumps(evaluated_tags, ensure_ascii=False)
+    return df[[const.ID, const.ENTITIES]]
+
+
+# The above section is set for deprecation.
+# ==========================================================================================
+
+
+def make_transcription_label_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Make transcription label df.
+
+    :param df: Dataframe.
+    :return: Dataframe.
+    :rtype: pd.DataFrame
+    """
+    df = df[[const.ID, const.TAG]].copy()
+    df[const.TRANSCRIPTION] = df[const.TAG].apply(
+        lambda tag: json.loads(tag).get(const.TEXT) if isinstance(tag, str) else None
+    )
+    return df[[const.ID, const.TRANSCRIPTION]]
+
+
+def add_columns_from_metadata(
+    df: pd.DataFrame, columns: List[str], key: str = const.DATA
+) -> pd.DataFrame:
+    """
+    Extract value of key in separate columns.
+
+    :param df: Dataframe.
+    :return: Dataframe.
+    :rtype: pd.DataFrame
+    """
+    if key not in df.columns:
+        return df
+    for i, row in tqdm(
+        df.iterrows(), total=len(df), desc="Add values from raw json column."
+    ):
+        raw_data = json.loads(row[key])
+        for col in columns:
+            df.at[i, col] = raw_data.get(col)
+    return df
+
+
+def prepare_tagged_df_for_training(
+    df_path: str,
+    dataset_type: str,
+    output_path: Optional[str] = None,
+    duckling_url: Optional[str] = None,
+) -> str:
+    """
+    Prepare tagged df for training on dialogy.
+
+    :param df_path: Path where tagged dataset exists.
+    :type df_path: str
+    :return: Dialogy compatible dataset.
+    :rtype: pd.DataFrame
+    """
+    if dataset_type == const.DATASET_TYPE__ENTITY and not duckling_url:
+        raise ValueError(
+            f"duckling url is required for processing {dataset_type} dataset."
+            " Refer to https://github.com/skit-ai/skit-auth for more details."
+        )
+
+    df = read_df(df_path)
+    df = add_columns_from_metadata(
+        df,
+        [
+            const.CALL_UUID,
+            const.CONVERSATION_UUID,
+            const.STATE,
+            const.ALTERNATIVES,
+            const.REFTIME,
+            const.PREDICTION,
+            const.INTENT,
+            const.ENTITIES,
+            const.LANGUAGE_CODE,
+        ],
+    )
+    df = fix_datetime(df, [const.REFTIME])
+    df = rename_columns(
+        df,
+        {const.DATA_ID: const.ID, const.ALTERNATIVES: const.UTTERANCES},
+    )
+
+    if dataset_type == const.DATASET_TYPE__INTENT:
+        label_df = make_intent_label_df(df)
+    elif dataset_type == const.DATASET_TYPE__TRANSCRIPTION:
+        label_df = make_transcription_label_df(df)
+    elif dataset_type == const.DATASET_TYPE__ENTITY:
+        label_df = make_entity_label_df(df, duckling_url)
+    else:
+        raise ValueError(f"Given {dataset_type=} not supported.")
+
+    if label_df.empty:
+        raise ValueError(f"No labels found for {dataset_type=}.")
+
+    df = remove_columns(df, [const.ID, *const.REQUIRED_COLS])
+    df = reorder_cols(df, [const.ID, *const.REQUIRED_COLS])
+
+    input_file_dir, input_file_name = os.path.split(df_path)
+    input_file_name, input_file_ext = os.path.splitext(input_file_name)
+    if not output_path:
+        _, output_path = tempfile.mkstemp(
+            dir=input_file_dir,
+            prefix=f"{input_file_name}-labels-{dataset_type}",
+            suffix=input_file_ext,
+        )
+    updated_df = df.merge(label_df, on=const.ID, how=const.INNER)
+    updated_df.to_csv(output_path, index=False)
+    return output_path
