@@ -1,0 +1,99 @@
+"""
+Copyright 2019 Goldman Sachs.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+"""
+
+import datetime as dt
+
+from gs_quant.context_base import do_not_serialise
+from gs_quant.target.common import *
+from gs_quant.target.common import PayReceive as _PayReceive
+from gs_quant.target.common import RiskMeasure as __RiskMeasure
+from gs_quant.target.common import RiskMeasureType, AssetClass
+
+
+class PositionType(Enum):
+    """Position type enumeration
+
+    Enumeration of different position types for a portfolio or index
+
+    """
+
+    OPEN = "open"  #: Open positions (corporate action adjusted)
+    CLOSE = "close"  #: Close positions (reflect trading activity on the close)
+    ANY = 'any'
+
+
+class DateLimit(Enum):
+    
+    """ Datetime date constants """
+
+    LOW_LIMIT = dt.date(1952, 1, 1)
+
+
+class PayReceive(EnumBase, Enum):
+
+    """Pay or receive fixed"""
+
+    Pay = 'Pay'
+    Receive = 'Rec'
+    Straddle = 'Straddle'
+
+    @classmethod
+    def _missing_(cls, key):
+        if isinstance(key, _PayReceive):
+            key = key.value
+
+        return cls.Receive if key.lower() in ('receive', 'receiver') else super()._missing_(key)
+
+
+class RiskMeasure(__RiskMeasure):
+
+    def __lt__(self, other):
+        return self.name < other.name
+
+    def __repr__(self):
+        return self.name or self.measure_type.name
+
+    @property
+    @do_not_serialise
+    def pricing_context(self):
+        from gs_quant.markets import PricingContext
+        return PricingContext.current
+
+
+class ParameterisedRiskMeasure(RiskMeasure):
+    def __init__(self, name: str = None, asset_class: Union[AssetClass, str] = None,
+                 measure_type: Union[RiskMeasureType, str] = None, unit: Union[RiskMeasureUnit, str] = None,
+                 value: Union[float, str] = None, parameters: RiskMeasureParameter = None):
+        super().__init__(asset_class=asset_class, measure_type=measure_type, unit=unit, value=value, name=name)
+        if parameters:
+            if isinstance(parameters, RiskMeasureParameter):
+                self.parameters = parameters
+            else:
+                raise TypeError(f"Unsupported parameter {parameters}")
+
+    def __repr__(self):
+        name = self.name or self.measure_type.name
+        params = None
+        if self.parameters:
+            params = self.parameters.as_dict()
+            params.pop('parameter_type', None)
+            sorted_keys = sorted(params.keys(), key=lambda x: x.lower())
+            params = ', '.join(
+                [f'{k}:{params[k].value if isinstance(params[k], EnumBase) else params[k]}' for k in sorted_keys])
+        return name + '(' + params + ')' if params else name
+
+    def parameter_is_empty(self):
+        return self.parameters is None
