@@ -1,0 +1,30 @@
+# -*- coding: utf-8 -*-
+from setuptools import setup
+
+packages = \
+['asgi_signing_middleware', 'asgi_signing_middleware.tests']
+
+package_data = \
+{'': ['*']}
+
+install_requires = \
+['blake2signer>=2.1.0,<3.0.0', 'starlette>=0.17.1,<0.18.0']
+
+setup_kwargs = {
+    'name': 'asgi-signing-middleware',
+    'version': '0.1.2',
+    'description': 'A library that provides signing middlewares for any ASGI application.',
+    'long_description': '[![Pipeline Status](https://img.shields.io/gitlab/pipeline/hackancuba/asgi-signing-middleware/develop?style=plastic)](https://gitlab.com/hackancuba/asgi-signing-middleware/-/pipelines?page=1&scope=all&ref=develop)\n[![Coverage Report](https://img.shields.io/gitlab/coverage/hackancuba/asgi-signing-middleware/develop?style=plastic)](https://gitlab.com/hackancuba/asgi-signing-middleware/-/commits/develop)\n[![PyPI Version](https://img.shields.io/pypi/v/asgi-signing-middleware?color=light%20green&style=plastic)](https://pypi.org/project/asgi-signing-middleware)\n[![PyPI Python Versions](https://img.shields.io/pypi/pyversions/asgi-signing-middleware?color=light%20green&style=plastic)](https://pypi.org/project/asgi-signing-middleware)\n[![License](https://img.shields.io/pypi/l/asgi-signing-middleware?color=light%20green&style=plastic)](https://gitlab.com/hackancuba/asgi-signing-middleware/-/blob/main/LICENSE)\n[![Follow Me on Twitter](https://img.shields.io/twitter/follow/hackancuba?color=light%20green&style=plastic)](https://twitter.com/hackancuba)\n\n# ASGI Signing Middleware\n\nThe goal of this project is to provide a simple and straightforward way to securely sign data by providing ready-to-use middlewares, using [blake2signer](https://blake2signer.hackan.net/) as signing backend.\n\n## Why would I need to use it?\n\nIf you need to store some data (state, generally), and want to avoid using a trusted DB for performance reasons, it is usually advisable to sign said data. This package will help you achieve that with ease, ready-to-use middlewares, without you needing to think on the details: just provide a signing secret and let this package handle the rest.\n\n## Why would I want to use it?\n\nBecause it is a relatively *small* (around 100 logical lines of code), *simple* (usage is very straight-forward) yet very *customizable* and *fast* middleware data signer. My idea is to keep it as uncomplicated as possible without much room to become a *footgun*. All *defaults are very sane* (secure) and everything *just works* out of the box.\n\n## Goals\n\n* Be safe and secure.\n* Be simple and straightforward.\n* Follow [semver](https://semver.org/).\n* Be always typed.\n* 100% coverage.\n\n### Secondary goals\n\n* If possible, maintain active Python versions (3.8+).\n\n## Installing\n\nThis package is hosted on [PyPi](https://pypi.org/project/asgi_signing_middleware) so just:\n\n* `python3 -m pip install asgi-signing-middleware`\n* `poetry add asgi-signing-middleware`\n* `pipenv install asgi-signing-middleware`\n\nYou can check the [releases\' page](https://gitlab.com/hackancuba/asgi-signing-middleware/-/releases) for package hashes and signatures.\n\n### Requirements\n\n- Python 3.8+\n- [blake2signer](https://blake2signer.hackan.net/)\n\nVersions currently tested (check the [pipelines](https://gitlab.com/hackancuba/asgi_signing_middleware/-/pipelines)):\n\n* CPython 3.8\n* CPython 3.9\n* CPython 3.10\n* CPython 3.11\n* [PyPy](https://www.pypy.org) 3.8\n* [Stackless](https://github.com/stackless-dev/stackless/wiki) 3.8\n\n## Tl; Dr Example\n\n```python\n"""Tl;dr example."""\n\nimport typing\n\nfrom fastapi import FastAPI\nfrom fastapi import Request\n\nfrom asgi_signing_middleware import SerializedSignedCookieMiddleware\n\napp = FastAPI()\napp.add_middleware(\n    SerializedSignedCookieMiddleware,  # Any of the middlewares\n    # Follows the middleware parameters\n    secret=b\'a very, very secret thing\',  # This should probably come from some configs\n    state_attribute_name=\'messages\',  # Use in a request handler as `request.state.messages`\n    cookie_name=\'my_cookie\',\n    cookie_ttl=60 * 5,  # 5 minutes, in seconds\n    # You can also set extra signer kwargs and cookie properties, check the middleware\n    # init for more info.\n)\n\n@app.get(\'/cookie\')\ndef cookie_endpoint(request: Request) -> None:\n    # This will only have data that was correctly signed, or None\n    cookie_data: typing.Optional[typing.Dict[str, str]] = request.state.messages\n\n    # ...\n\n    # This will be signed and written into the cookie\n    request.state.messages = {\'A Title\': \'The message\', \'Another title\': \'With another msg\'}\n```\n\n> Tip: all modules, classes, methods and functions are documented so don\'t doubt asking for `help()`.\n\n## Documentation\n\nCheck out this [project docs online](https://asgi-signing-middleware.hackan.net) or locally with `inv docs`. Alternatively, build them locally using `inv docs --build`.\n\n## Notice\n\nI\'m not a cryptoexpert, so *this project needs a security review*. If you are one and can do it, please [contact me](https://hackan.net).\n\n## License\n\n**ASGI Signing Middleware** is made by [HacKan](https://hackan.net) under MPL v2.0. You are free to use, share, modify and share modifications under the terms of that [license](LICENSE).  Derived works may link back to the canonical repository: `https://gitlab.com/hackancuba/asgi-signing-middleware`.\n\n    Copyright (C) 2022 HacKan (https://hackan.net)\n    This Source Code Form is subject to the terms of the Mozilla Public\n    License, v. 2.0. If a copy of the MPL was not distributed with this\n    file, You can obtain one at https://mozilla.org/MPL/2.0/.\n\n----\n',
+    'author': 'HacKan',
+    'author_email': 'hackan@gmail.com',
+    'maintainer': None,
+    'maintainer_email': None,
+    'url': 'https://gitlab.com/hackancuba/asgi-signing-middleware',
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'python_requires': '>=3.8,<4.0',
+}
+
+
+setup(**setup_kwargs)
