@@ -1,0 +1,477 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+This is the Kodexa CLI, it can be used to allow you to work with an instance of the Kodexa platform.
+
+It supports interacting with the API, listing and viewing components.  Note it can also be used to login and logout
+"""
+import glob
+import json
+import logging
+import os
+import os.path
+import sys
+import tarfile
+from getpass import getpass
+from pathlib import Path
+from typing import Optional
+
+import click
+import yaml
+from rich import print
+
+from kodexa.cli.documentation import generate_site
+from kodexa.model.model import ModelContentMetadata
+from kodexa.platform.kodexa import ExtensionHelper, KodexaPlatform
+
+LOGGING_LEVELS = {
+    0: logging.NOTSET,
+    1: logging.ERROR,
+    2: logging.WARN,
+    3: logging.INFO,
+    4: logging.DEBUG,
+}  #: a mapping of `verbose` option counts to logging levels
+
+
+class Info(object):
+    """An information object to pass data between CLI functions."""
+
+    def __init__(self):  # Note: This object must have an empty constructor.
+        """Create a new instance."""
+        self.verbose: int = 0
+
+
+# pass_info is a decorator for functions that pass 'Info' objects.
+#: pylint: disable=invalid-name
+pass_info = click.make_pass_decorator(Info, ensure=True)
+
+
+# Change the options to below to suit the actual options for your task (or
+# tasks).
+@click.group()
+@click.option("--verbose", "-v", count=True, help="Enable verbose output.")
+@pass_info
+def cli(info: Info, verbose: int):
+    """Run Kodexa.
+
+    Args:
+      info: Info: 
+      verbose: int: 
+
+    Returns:
+
+    """
+    # Use the verbosity count to determine the logging level...
+    if verbose > 0:
+        logging.basicConfig(
+            level=LOGGING_LEVELS[verbose]
+            if verbose in LOGGING_LEVELS
+            else logging.DEBUG
+        )
+        click.echo(
+            click.style(
+                f"Verbose logging is enabled. "
+                f"(LEVEL={logging.getLogger().getEffectiveLevel()})",
+                fg="yellow",
+            )
+        )
+    info.verbose = verbose
+
+
+@click.option('--path', default=os.getcwd(), help='Path to folder containing kodexa.yml')
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--org', help='The slug for the organization to deploy to', required=True)
+@click.option('--slug', help='The slug to deploy the model to', required=False)
+@click.option('--version', help='The version to deploy the model to', required=False)
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@cli.command()
+@pass_info
+def push_model(_: Info, path: str, url: str, org: str, token: str, slug: str, version: str):
+    """Deploy extension pack to a Kodexa platform instance
+    """
+
+    print("Pushing model from path", path)
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+
+    # We need to open the model.yml - upload the contents
+    # and then update the metadata
+    with open(path + "/model.yml", "r") as model_meta_file:
+        import yaml
+        model_meta = yaml.safe_load(model_meta_file)
+
+    slug = slug if slug else model_meta["slug"]
+    version = version if version else model_meta["version"]
+    model_meta["type"] = "model"
+
+    model_meta["version"] = version
+    model_meta["slug"] = slug
+
+    from kodexa import RemoteModelStore
+    ref = f"{org}/{slug}:{version}"
+    print("Pushing model to ", ref)
+    model_meta['ref'] = ref
+    remote_model_store = RemoteModelStore.parse_obj(model_meta)
+
+    KodexaPlatform.deploy(ref, remote_model_store, name=model_meta['name'], description=model_meta['description'],
+                          force_replace=True)
+
+    print("Deleting existing contents")
+    for path in remote_model_store.list_contents():
+        remote_model_store.delete(path)
+
+    for path in model_meta["contents"]:
+        for path_hit in glob.glob(path):
+            print(f"Uploading {path_hit}")
+            if Path(path_hit).is_file():
+                with open(path_hit, 'rb') as path_content:
+                    remote_model_store.put(path_hit, path_content, replace=True)
+
+    model_metadata = ModelContentMetadata.parse_obj(model_meta['metadata'])
+    remote_model_store.set_content_metadata(model_metadata)
+    print("Pushed model :tada:")
+
+
+@click.option('--path', default=os.getcwd(), help='Path to folder containing kodexa.yml')
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--org', help='The slug for the organization to deploy to', required=True)
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@cli.command()
+@pass_info
+def deploy(_: Info, path: str, url: str, org: str, token: str):
+    """Deploy extension pack to a Kodexa platform instance
+    """
+
+    print("Starting deployment from path", path)
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+
+    if '://' in path:
+        print("Deploying from URI", path)
+        KodexaPlatform.deploy_extension_from_uri(path, org)
+    else:
+        print("Deploying local metadata from", path)
+        metadata = ExtensionHelper.load_metadata(path)
+        metadata['orgSlug'] = org;
+        KodexaPlatform.deploy_extension(metadata)
+
+    print("Deployed extension pack :tada:")
+
+@cli.command()
+@click.argument('id', required=True)
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@pass_info
+def project(_: Info, id: str, token: str, url: str):
+    """Get all the details for a specific project
+    """
+
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+
+    KodexaPlatform.get_project(id)
+
+@cli.command()
+@click.argument('ref', required=True)
+@click.argument('path', required=True)
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@pass_info
+def upload(_: Info, ref: str, path: str, token: str, url: str):
+    """Upload the contents of a file or directory to a Kodexa platform instance
+    """
+
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+
+    print(f"Uploading {path}")
+    KodexaPlatform.upload_file(ref, path)
+    print("Upload complete :tada:")
+
+
+@cli.command()
+@click.argument('object_type', required=True)
+@click.argument('ref', required=False)
+@click.option('--file', help='The path to the file containing the object to apply')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@click.option('--format', default=None, help='The format to input if from stdin (json, yaml)')
+@pass_info
+def apply(_: Info, object_type: str, ref: Optional[str], file: str, token: str, format=None):
+    """Apply an object to a Kodexa platform instance
+    """
+
+    KodexaPlatform.set_access_token(token)
+
+    obj = None
+    if file is None:
+        print("Reading from stdin")
+        if format == 'yaml':
+            obj = yaml.safe_load(sys.stdin.read())
+        elif format == 'json':
+            obj = json.loads(sys.stdin.read())
+        else:
+            raise Exception("You must provide a format if using stdin")
+    else:
+        print("Reading from file", file)
+        with open(file, 'r') as f:
+            if file.lower().endswith('.json'):
+                obj = json.load(f)
+            elif file.lower().endswith('.yaml'):
+                obj = yaml.safe_load(f)
+            else:
+                raise Exception("Unsupported file type")
+
+    print("Applying object")
+    KodexaPlatform.apply(object_type, ref, obj)
+    print("Applied object :tada:")
+
+
+@cli.command()
+@click.argument('execution_id', required=True)
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@pass_info
+def logs(_: Info, execution_id: str, url: str, token: str):
+    """Get logs for an execution
+    """
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+    KodexaPlatform.logs(execution_id)
+
+
+@cli.command()
+@click.argument('object_type', required=True)
+@click.argument('ref', required=False)
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@click.option('--query', default="*", help='Limit the results using a query')
+@click.option('--path', default=None, help='JQ path to content you want')
+@click.option('--format', default=None, help='The format to output (json, yaml)')
+@click.option('--page', default=1, help='Page number')
+@click.option('--pageSize', default=10, help='Page size')
+@click.option('--sort', default=None, help='Sort by (ie. startDate:desc)')
+@pass_info
+def get(_: Info, object_type: str, ref: Optional[str], url: str, token: str, query: str, path: str = None, format=None,
+        page: int = 1, pagesize: int = 10, sort: str = None):
+    """
+    List the instance of the object type
+    """
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+    KodexaPlatform.get(object_type, ref, path, format, query, page, pagesize, sort)
+
+
+@cli.command()
+@click.argument('ref', required=True)
+@click.argument('query', default="*")
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@click.option('--download/--no-download', default=False, help='Download the KDDB for the lastest in the family')
+@click.option('--page', default=1, help='Page number')
+@click.option('--pageSize', default=10, help='Page size')
+@click.option('--sort', default=None, help='Sort by ie. name:asc')
+@pass_info
+def query(_: Info, query: str, ref: str, url: str, token: str, download: bool, page: int, pagesize: int, sort: None):
+    """
+    Query the documents in a given document store
+    """
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+    KodexaPlatform.query(ref, query, download, page, pagesize, sort)
+
+
+@cli.command()
+@click.argument('project_id', required=True)
+@click.argument('assistant_id', required=True)
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@click.option('--file', help='The path to the file containing the event to send')
+@click.option('--format', default=None, help='The format to use if from stdin (json, yaml)')
+@pass_info
+def send_event(_: Info, project_id: str, assistant_id: str, url: str, file: str, format: str, token: str):
+    """Send an event to an assistant
+    """
+
+    KodexaPlatform.set_access_token(token)
+    KodexaPlatform.set_url(url)
+
+    obj = None
+    if file is None:
+        print("Reading from stdin")
+        if format == 'yaml':
+            obj = yaml.parse(sys.stdin.read())
+        elif format == 'json':
+            obj = json.loads(sys.stdin.read())
+        else:
+            raise Exception("You must provide a format if using stdin")
+    else:
+        print("Reading event from file", file)
+        with open(file, 'r') as f:
+            if file.lower().endswith('.json'):
+                obj = json.load(f)
+            elif file.lower().endswith('.yaml'):
+                obj = yaml.full_load(f)
+            else:
+                raise Exception("Unsupported file type")
+
+    print("Sending event")
+    KodexaPlatform.send_event(project_id, assistant_id, obj)
+    print("Event sent :tada:")
+
+
+@cli.command()
+@click.argument('object_type', required=True)
+@click.argument('ref', required=True)
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@pass_info
+def reindex(_: Info, object_type: str, ref: str, url: str, token: str):
+    """
+    Reindex the given resource (based on ref)
+    """
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+    KodexaPlatform.reindex(object_type, ref)
+
+
+@cli.command()
+@pass_info
+@click.option('--python/--no-python', default=False, help='Print out the header for a Python file')
+def platform(_: Info, python: bool):
+    """
+    Get the details for the Kodexa instance we are logged into
+    """
+    platform_url = KodexaPlatform.get_url()
+
+    if platform_url is not None:
+        print(f"Kodexa URL: {KodexaPlatform.get_url()}")
+        print(f"Access Token: {KodexaPlatform.get_access_token()}")
+        kodexa_version = KodexaPlatform.get_server_info()
+        print(f"Version: {kodexa_version['version']}")
+        print(f"Release: {kodexa_version['release']}")
+        if python:
+            print("\nPython example:\n\n")
+            print(f"from kodexa import *")
+            print(f"KodexaPlatform.set_url('{KodexaPlatform.get_url()}')")
+            print(f"KodexaPlatform.set_access_token('{KodexaPlatform.get_access_token()}')")
+    else:
+        print("Kodexa is not logged in")
+
+
+@cli.command()
+@click.argument('object_type')
+@click.argument('ref')
+@click.option('--url', default=KodexaPlatform.get_url(), help='The URL to the Kodexa server')
+@click.option('--token', default=KodexaPlatform.get_access_token(), help='Access token')
+@pass_info
+def delete(_: Info, object_type: str, ref: str, url: str, token: str):
+    """
+    Delete the given resource (based on ref)
+    """
+    KodexaPlatform.set_url(url)
+    KodexaPlatform.set_access_token(token)
+    KodexaPlatform.delete(object_type, ref)
+
+
+@cli.command()
+@click.option('--path', default=os.getcwd(), help='Path to folder container kodexa.yml')
+@pass_info
+def metadata(_: Info, path: str):
+    """
+    Load metadata
+    """
+    metadata = ExtensionHelper.load_metadata(path)
+    print(f"Metadata loaded")
+
+
+@cli.command()
+@pass_info
+def login(_: Info):
+    """Logs into the specified platform environment using the email address and password provided,
+    then downloads and stores the personal access token (PAT) of the user.
+    Once successfully logged in, calls to remote actions, pipelines, and workflows will be made to the
+    platform that was set via this login function and will use the stored PAT for authentication.
+
+    """
+    try:
+        kodexa_url = input("Enter the Kodexa URL (https://platform.kodexa.com): ")
+        if kodexa_url == "":
+            print("Using default as https://platform.kodexa.com")
+            kodexa_url = "https://platform.kodexa.com"
+        username = input("Enter your email: ")
+        password = getpass("Enter your password: ")
+    except Exception as error:
+        print('ERROR', error)
+    else:
+        KodexaPlatform.login(kodexa_url, username, password)
+
+
+@cli.command()
+@click.option('--path', default=os.getcwd(), help='Path to folder container kodexa.yml')
+@pass_info
+def document(_: Info, path: str):
+    """
+    Build markdown documentation for this extension
+    """
+    metadata = ExtensionHelper.load_metadata(path)
+    print("Metadata loaded")
+    from kodexa.cli.documentation import generate_documentation
+    generate_documentation(metadata)
+    print("Extension documentation has been successfully built :tada:")
+
+
+@cli.command()
+@click.option('--path', default=os.getcwd(), help='Path to folder container kodexa.yml (defaults to current)')
+@click.option('--output', default=os.getcwd() + "/dist",
+              help='Path to the output folder (defaults to dist under current)')
+@click.option('--version', default=os.getenv('VERSION'), help='Version number (defaults to 1.0.0)')
+@click.option('--site/--no-site', default=False, help='Generate website to serve extension')
+@click.option('--sitedir', default='site', help='Path to folder for site contents')
+@click.option('--url', default='http://www.example.com/', help='The base URL for the site links')
+@pass_info
+def package(_: Info, path: str, output: str, version: str, site: bool, sitedir: str, url: str):
+    """
+    Package an extension pack based on the kodexa.yml file
+    """
+    metadata_obj = ExtensionHelper.load_metadata(path)
+    print("Preparing to pack")
+    try:
+        os.makedirs(output)
+    except OSError as e:
+        import errno
+        if e.errno != errno.EEXIST:
+            raise
+
+    metadata_obj['version'] = version if version is not None else '1.0.0'
+
+    if 'source' in metadata_obj and 'location' in metadata_obj['source']:
+        metadata_obj['source']['location'] = metadata_obj['source']['location'].format(**metadata_obj)
+
+    versioned_metadata = os.path.join(output, f"{metadata_obj['slug']}-{metadata_obj['version']}.json")
+
+    if site:
+        metadata_obj['source']['location'] = url + metadata_obj[
+            'version'] + '/' + f"{metadata_obj['slug']}-{metadata_obj['version']}.tar.gz"
+
+    unversioned_metadata = os.path.join(output, "kodexa.json")
+    with open(versioned_metadata, 'w') as outfile:
+        json.dump(metadata_obj, outfile)
+
+    from shutil import copyfile
+    copyfile(versioned_metadata, unversioned_metadata)
+
+    output_filename = f"{metadata_obj['slug']}-{metadata_obj['version']}.tar.gz"
+    with tarfile.open(output_filename, "w:gz") as tar:
+        tar.add(output, arcname=os.path.basename(output))
+
+    os.rename(output_filename, os.path.join(output, output_filename))
+
+    print("Extension has been packaged :tada:")
+
+    if site:
+        metadata_obj['json_location'] = url + metadata_obj[
+            'version'] + '/' + f"{metadata_obj['slug']}-{metadata_obj['version']}.json"
+        generate_site(metadata=metadata_obj, base_dir=sitedir, output_filename=os.path.join(output, output_filename),
+                      url=url, output_json=versioned_metadata)
+        print("Extension site has been successfully built :tada:")
