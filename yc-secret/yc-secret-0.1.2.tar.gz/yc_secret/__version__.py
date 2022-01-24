@@ -1,0 +1,8 @@
+__title__ = 'yc-secret'
+__description__ = 'Library for interaction with the Yandex Cloud Lockbox service'
+__version__ = '0.1.2'
+__author__ = 'Aksyanov Rustam'
+__author_email__ = 'rustam@akrustam.com'
+__license__ = 'Apache 2.0'
+__copyright__ = 'Copyright 2022 Aksyanov Rustam'
+__url__ = 'https://yc-secret.readthedocs.io'
