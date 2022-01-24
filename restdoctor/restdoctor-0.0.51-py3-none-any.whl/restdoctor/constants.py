@@ -1,0 +1,10 @@
+from __future__ import annotations
+
+DEFAULT_PREFIX_FORMAT_VERSION = ':'
+
+DEFAULT_PAGE_SIZE = 20
+DEFAULT_MAX_PAGE_SIZE = 200
+
+DATETIME_FORMAT = '%Y-%m-%dT%H:%M:%S.%f%z'
+
+HTTP_420_GO_TO_HELL = 420
