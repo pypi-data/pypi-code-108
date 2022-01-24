@@ -1,0 +1,12 @@
+REDIS_HOST = "ds.trell.internal"
+REDIS_STAGING_HOST = "ds-staging.trell.internal"
+BASE_URL = "https://ds.trell.co/"
+STAG_URL = "https://ds-staging.trell.co/"
+BIG_QUERY_PROJECT = "trellatale"
+READ_BIG_QUERY_PROJECT = "trell-ds-common"
+WRITE_BIG_QUERY_PROJECT = "trellatale"
+
+LOCAL_HOST = "127.0.0.1"
+DATABASE_1 = "trellDb"
+DATABASE_2 = "data_science"
+BIG_QUERY_SERVICE_ACCOUNT_CRED = "trell-ds-projects-common.json"
