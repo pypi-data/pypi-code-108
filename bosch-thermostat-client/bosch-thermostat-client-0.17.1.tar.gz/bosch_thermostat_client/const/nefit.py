@@ -1,0 +1,18 @@
+from . import (
+    HC,
+    HEATING_CIRCUITS,
+    DHW,
+    DHW_CIRCUITS,
+    SC,
+    SOLAR_CIRCUITS,
+)
+
+MAGIC_NEFIT = bytearray.fromhex(
+    "58f18d70f667c9c79ef7de435bf0f9b1553bbb6e61816212ab80e5b0d351fbb1"
+)
+NEFIT = "NEFIT"
+PRODUCT_ID = "productID"
+NEFITEASY = "NefitEasy"
+CIRCUIT_TYPES = {HC: HEATING_CIRCUITS, DHW: DHW_CIRCUITS, SC: SOLAR_CIRCUITS}
+MANUAL_STATUS = "manual_status"
+MANUAL_OVERRIDE = "manual_override"
