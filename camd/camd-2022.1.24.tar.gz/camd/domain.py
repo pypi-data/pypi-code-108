@@ -1,0 +1,512 @@
+# Copyright Toyota Research Institute 2019
+"""
+Preliminary module for determining search spaces
+"""
+import pandas as pd
+import abc
+import warnings
+import itertools
+import numpy as np
+
+from protosearch.build_bulk.oqmd_interface import OqmdInterface
+
+
+from pymatgen.io.ase import AseAtomsAdaptor
+from pymatgen.core.composition import Composition, Element
+from matminer.featurizers.base import MultipleFeaturizer
+from matminer.featurizers.composition import (
+    ElementProperty,
+    Stoichiometry,
+    ValenceOrbital,
+    IonProperty,
+)
+from matminer.featurizers.structure import (
+    SiteStatsFingerprint,
+    StructuralHeterogeneity,
+    ChemicalOrdering,
+    StructureComposition,
+    MaximumPackingEfficiency,
+)
+
+
+class DomainBase(abc.ABC):
+    """
+    Domains combine generation and featurization and prepare
+    the search space for CAMD Loop.
+    """
+
+    @abc.abstractmethod
+    def candidates(self):
+        """
+        Primary method for every Domain to provide candidates.
+
+        Returns:
+            (pandas.DataFrame): features for generated hypothetical
+                structures. The Index of dataframe should be the
+                unique ids for the structures.
+        """
+        pass
+
+    @property
+    @abc.abstractmethod
+    def bounds(self):
+        """
+        Returns:
+            list: names of dimensions of the search space.
+        """
+        pass
+
+    @abc.abstractmethod
+    def sample(self, num_samples):
+        """
+        Abstract method for sampling from created domain
+
+        Args:
+            num_samples:
+        Returns:
+        """
+        pass
+
+    @property
+    def bounds_string(self):
+        """
+        Property representation of search space bounds
+        Returns:
+            (str): representation of search space bounds, e.g.
+                "Ir-Fe-O" or "x1-x2-x3"
+        """
+        return "-".join(self.bounds)
+
+
+class StructureDomain(DomainBase):
+    """
+    Provides machine learning ready candidate domains (search spaces) for
+    hypothetical structures.  If scanning an entire system, use the
+    StructureDomain.from_bounds method. If scanning for formula(s),
+    provide a list of formulas directly to StructureDomain.
+
+    Once the StructureDomain is initialized, the method candidates returns
+    a fully-featurized hypothetical materials set subject to n_max_atoms.
+    """
+
+    def __init__(self, formulas, n_max_atoms=None):
+        """
+        Args:
+            formulas ([str]): list of chemical formulas to create new
+                material candidates.
+            n_max_atoms (int): number of max atoms
+        """
+        self.formulas = formulas
+        self.n_max_atoms = n_max_atoms
+        self.features = None
+        self._hypo_structures = None
+
+    @classmethod
+    def from_bounds(
+        cls,
+        bounds,
+        n_max_atoms=None,
+        charge_balanced=True,
+        create_subsystems=False,
+        **kwargs
+    ):
+        """
+        Convenience constructor that delivers an ML-ready domain
+        from defined chemical boundaries.
+
+        Args:
+            bounds ([str]): list of element strings corresponding to bounds of
+                the composition space, e. g. ['Fe', 'O', 'N']
+            n_max_atoms (int): maximum number of atoms in the generated
+                formulae
+            charge_balanced (bool): whether to filter generated formulae by
+                charge balancing the respective elements according to allowed
+                oxidation states
+            create_subsystems (bool): TODO - what is this?
+            **kwargs: arguments to pass to formula creator
+        """
+        formulas = create_formulas(
+            bounds,
+            charge_balanced=charge_balanced,
+            create_subsystems=create_subsystems,
+            **kwargs
+        )
+        print("Generated chemical formulas: {}".format(formulas))
+        return cls(formulas, n_max_atoms)
+
+    @property
+    def bounds(self):
+        """
+        Method to get bounds from StructureDomain
+
+        Returns:
+            ([]): list of dimensions in search space
+
+        """
+        bounds = set()
+        for formula in self.formulas:
+            bounds = bounds.union(Composition(formula).as_dict().keys())
+        return bounds
+
+    def get_structures(self):
+        """
+        Method to call protosearch structure generation
+        """
+        if self.formulas:
+            print("Generating hypothetical structures...")
+            self._hypo_structures = get_structures_from_protosearch(self.formulas)
+            print(
+                "Generated {} hypothetical structures".format(len(self.hypo_structures))
+            )
+        else:
+            raise ValueError("Need formulas to create structures")
+
+    @property
+    def hypo_structures(self):
+        """
+        Returns (dataframe): Hypothetical structures generated by
+            protosearch, filtered by n_max_atoms
+
+        """
+        if self._hypo_structures is None:
+            self.get_structures()
+        if self.n_max_atoms:
+            n_max_filter = [
+                i.num_sites <= self.n_max_atoms
+                for i in self._hypo_structures["structure"]
+            ]
+            if self._hypo_structures is not None:
+                return self._hypo_structures[n_max_filter]
+            else:
+                return None
+        else:
+            return self._hypo_structures
+
+    @property
+    def hypo_structures_dict(self):
+        """
+        Returns:
+            (dict): Hypothetical structures generated by
+                protosearch, filtered by n_max_atoms
+
+        """
+        return self.hypo_structures["structure"].to_dict()
+
+    @property
+    def compositions(self):
+        """
+        Returns:
+            (list): Compositions of hypothetical structures generated.
+        """
+        if self.hypo_structures is not None:
+            return [s.composition for s in self.hypo_structures]
+        else:
+            warnings.warn("No stuctures available.")
+            return []
+
+    @property
+    def formulas_with_valid_structures(self):
+        """
+        Quick method to filter formulas with valid structures
+
+        Returns:
+            ([str]): list of formulas with corresponding valid
+                structures
+
+        """
+        # Note the redundancy here is for pandas to work
+        if self.valid_structures is not None:
+            return [s.composition.formula for s in self.valid_structures["structure"]]
+        else:
+            warnings.warn("No structures available yet.")
+            return []
+
+    def featurize_structures(self, featurizer=None, **kwargs):
+        """
+        Featurizes the hypothetical structures available from
+        hypo_structures method. Hypothetical structures for which
+        featurization fails are removed and valid structures are
+        made available as valid_structures
+
+        Args:
+            featurizer (Featurizer): A MatMiner Featurizer.
+                Defaults to MultipleFeaturizer with PRB Ward
+                Voronoi descriptors.
+            **kwargs (dict): kwargs passed to featurize_many
+                method of featurizer.
+
+        Returns:
+            (pandas.DataFrame): features
+
+        """
+        # Note the redundancy here is for pandas to work
+        if self.hypo_structures is None:
+            warnings.warn("No structures available. Generating structures.")
+            self.get_structures()
+
+        print("Generating features")
+        featurizer = (
+            featurizer
+            if featurizer
+            else MultipleFeaturizer(
+                [
+                    SiteStatsFingerprint.from_preset(
+                        "CoordinationNumber_ward-prb-2017"
+                    ),
+                    StructuralHeterogeneity(),
+                    ChemicalOrdering(),
+                    MaximumPackingEfficiency(),
+                    SiteStatsFingerprint.from_preset(
+                        "LocalPropertyDifference_ward-prb-2017"
+                    ),
+                    StructureComposition(Stoichiometry()),
+                    StructureComposition(ElementProperty.from_preset("magpie")),
+                    StructureComposition(ValenceOrbital(props=["frac"])),
+                    StructureComposition(IonProperty(fast=True)),
+                ]
+            )
+        )
+
+        features = featurizer.featurize_many(
+            self.hypo_structures["structure"], ignore_errors=True, **kwargs
+        )
+
+        n_species, formula = [], []
+        for s in self.hypo_structures["structure"]:
+            n_species.append(len(s.composition.elements))
+            formula.append(s.composition.formula)
+
+        self._features_df = pd.DataFrame.from_records(
+            features, columns=featurizer.feature_labels()
+        )
+        self._features_df.index = self.hypo_structures.index
+        self._features_df["N_species"] = n_species
+        self._features_df["Composition"] = formula
+        self._features_df["structure"] = self.hypo_structures["structure"]
+        self.features = self._features_df.dropna(axis=0, how="any")
+        self.features = self.features.reindex(sorted(self.features.columns), axis=1)
+
+        self._valid_structure_labels = list(self.features.index)
+        self.valid_structures = self.hypo_structures.loc[self._valid_structure_labels]
+
+        print(
+            "{} out of {} structures were successfully featurized.".format(
+                self.features.shape[0], self._features_df.shape[0]
+            )
+        )
+        return self.features
+
+    def candidates(self, include_composition=True):
+        """
+        This is the recommended convenience method that returns
+        a fully-featurized set of hypothetical structures.
+
+        Args:
+            include_composition (bool): Adds a column named "formula"
+                to the dataframe.
+
+        Returns:
+            (pandas.DataFrame) feature vectors of valid
+                hypothetical structures.
+        """
+        if self._hypo_structures is None:
+            self.get_structures()
+
+        if self.features is None:
+            self.featurize_structures()
+        if include_composition:
+            return self.features
+        else:
+            return self.features.drop("Composition", axis=1)
+
+    def sample(self, num_samples):
+        """
+        Method for sampling domain
+
+        Args:
+            num_samples (int): number of samples to return
+
+        Returns:
+            (pd.DataFrame): dataframe corresponding to sampled
+                domain with num_samples candidates
+
+        """
+        self.candidates().sample(num_samples)
+
+
+def get_structures_from_protosearch(formulas, source="icsd", db_interface=None):
+    """
+    Calls protosearch to get the hypothetical structures.
+
+    Args:
+        formulas ([str]): list of chemical formulas from which
+            to generate candidate structures
+        source (str): project name in OQMD to be used as source.
+            Defaults to ICSD.
+        db_interface (DbInterface): interface to OQMD database
+            by default uses the one pulled from data.matr.io
+
+    Returns:
+        (pandas.DataFrame) hypothetical pymatgen structures
+            generated and their unique ids from protosearch
+    """
+
+    if db_interface is None:
+        db_interface = OqmdInterface(source)
+    dataframes = [
+        db_interface.create_proto_data_set(chemical_formula=formula)
+        for formula in formulas
+    ]
+    _structures = pd.concat(dataframes)
+
+    # Drop bad structures
+    _structures.dropna(axis=0, how="any", inplace=True)
+
+    # conversion to pymatgen structures
+    ase_adap = AseAtomsAdaptor()
+    pmg_structures = [
+        ase_adap.get_structure(_structures.iloc[i]["atoms"])
+        for i in range(len(_structures))
+    ]
+    _structures["structure"] = pmg_structures
+    # This is for compatibility with Mc1, which doesn't allow
+    # underscores
+    structure_uids = [
+        _structures.iloc[i]["structure_name"].replace('_', '-')
+        for i in range(len(_structures))
+    ]
+    _structures.index = structure_uids
+    return _structures
+
+
+def get_stoichiometric_formulas(n_components, grid=None):
+    """
+    Generates anonymous stoichiometric formulas for a set
+    of n_components with specified coefficients
+
+    Args:
+        n_components (int): number of components (dimensions)
+        grid (list): a range of integers
+
+    Returns:
+        (list): unique stoichiometric formula from an
+            allowed grid of integers.
+    """
+    grid = grid if grid else list(range(1, 8))
+    args = [grid for _ in range(n_components)]
+    stoics = np.array(list(itertools.product(*args)))
+    fracs = stoics.astype(float) / np.sum(stoics, axis=1)[:, None]
+    _, indices, counts = np.unique(fracs, axis=0, return_index=True, return_counts=True)
+    return stoics[indices]
+
+
+def create_formulas(
+    bounds,
+    charge_balanced=True,
+    oxi_states_extend=None,
+    oxi_states_override=None,
+    all_oxi_states=False,
+    grid=None,
+    create_subsystems=False,
+):
+    """
+    Creates a list of formulas given the bounds of a chemical space.
+
+    TODO:
+        - implement create_subsystems
+
+    Args:
+        bounds ([str]): list of elements to bound the space
+        charge_balanced (bool): whether to balance oxidations
+            states in the generated formulae
+        oxi_states_extend ({}): dictionary of {element: [int]}
+            where the value is the added oxidation state to be
+            included
+        oxi_states_override ({str: int}): override for oxidation
+            states, see Composition.oxi_state_guesses
+        all_oxi_states ({str: int): global config for oxidation
+            states, see Composition.oxi_state_guesses
+        grid ([]): list of integers to use for coefficients
+        create_subsystems (bool): whether to create formulas
+            for sub-chemical systems, e. g. for Sr-Ti-O,
+            whether to create Ti-O and Sr-O
+
+    Returns:
+        ([str]): list of chemical formulas
+
+    """
+    if create_subsystems:
+        raise NotImplementedError("Create subsystems not yet implemented.")
+
+    stoichs = get_stoichiometric_formulas(len(bounds), grid=grid)
+
+    formulas = []
+    for f in stoichs:
+        f_ = ""
+        for i in range(len(f)):
+            f_ += bounds[i] + f.astype(str).tolist()[i]
+        formulas.append(f_)
+
+    if charge_balanced:
+        charge_balanced_formulas = []
+
+        if oxi_states_extend:
+            oxi_states_override = oxi_states_override if oxi_states_override else {}
+            for element, states in oxi_states_extend.items():
+                states = states if isinstance(states, list) else [states]
+                _states = states + list(Element[element].common_oxidation_states)
+                if element in oxi_states_override:
+                    oxi_states_override[element] += states
+                else:
+                    oxi_states_override[element] = _states
+
+        for formula in formulas:
+            c = Composition(formula)
+            if c.oxi_state_guesses(
+                oxi_states_override=oxi_states_override, all_oxi_states=all_oxi_states
+            ):
+                charge_balanced_formulas.append(formula)
+        return charge_balanced_formulas
+    else:
+        return formulas
+
+
+def heuristic_setup(elements):
+    """
+    Helper function to setup a default structure_domain
+
+    Args:
+        elements ([str]): list of elements to use to
+            generate formulae
+
+    Returns:
+        (int): maximum coefficient for element set
+        (bool): whether or not charge balancing should be used
+
+    """
+    grid_defaults = {2: 5, 3: 5}
+    n_comp = len(elements)
+    _g = grid_defaults.get(n_comp, 4)
+
+    # Charge balance ionic compounds
+    if {"O", "Cl", "F", "S", "N", "Br", "I"}.intersection(set(elements)):
+        charge_balanced = True
+    else:
+        charge_balanced = False
+
+    if not charge_balanced:
+        return _g, charge_balanced
+    else:
+        g_max_max = 8
+        while True:
+            sd = StructureDomain.from_bounds(
+                elements, charge_balanced=True, grid=range(1, _g)
+            )
+            n = len(sd.formulas)
+            if n >= 20:
+                return _g, charge_balanced
+            else:
+                if _g < g_max_max:
+                    _g += 1
+                else:
+                    return _g, charge_balanced
