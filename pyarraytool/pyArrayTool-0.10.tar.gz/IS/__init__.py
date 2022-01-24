@@ -1,0 +1,1 @@
+from .Interpolation_search import IS
