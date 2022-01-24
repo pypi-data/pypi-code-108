@@ -1,0 +1,7 @@
+# Copyright 2022 UW-IT, University of Washington
+# SPDX-License-Identifier: Apache-2.0
+
+from commonconf import override_settings
+
+
+fdao_pws_override = override_settings(RESTCLIENTS_PWS_DAO_CLASS='Mock')
