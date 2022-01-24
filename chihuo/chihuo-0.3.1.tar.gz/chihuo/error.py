@@ -1,0 +1,2 @@
+class UnknownServer(Exception):
+    pass
