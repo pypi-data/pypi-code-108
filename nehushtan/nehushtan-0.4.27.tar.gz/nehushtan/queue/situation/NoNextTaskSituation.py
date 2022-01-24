@@ -1,0 +1,2 @@
+class NoNextTaskSituation(Exception):
+    pass
