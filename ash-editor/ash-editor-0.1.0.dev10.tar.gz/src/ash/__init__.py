@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------------------------
+#  Copyright (c) Akash Nag. All rights reserved.
+#  Licensed under the MIT License. See LICENSE.md in the project root for license information.
+# ---------------------------------------------------------------------------------------------
+
+# This is imported by all modules, sets global parameters
+
+import curses
+import os
+import sys
+import copy
+import glob
+import subprocess
+
+__version__			= "0.1.0-dev"
+__build__			= "10"
+__release_date__	= "Jan 25, 2022"
+
+APP_COPYRIGHT_TEXT	= "© Copyright 2000-2022, Akash Nag. All rights reserved."
+APP_LICENSE_TEXT	= "Licensed under the MIT License."
+APP_WEBSITE_URL		= "https://akashnag.github.io/ash"
+APP_GITHUB_URL		= "https://github.com/akashnag/ash"
+
+UNSAVED_BULLET		= "\u2022"
+TICK_MARK			= "\u2713"
+
+# list of supported encodings
+SUPPORTED_ENCODINGS = [ "utf-8", "ascii", "utf-7", "utf-16", "utf-32", "latin-1" ]
+
+APP_MODE_FILE		= 1		# if ash is invoked with zero or more file names
+APP_MODE_PROJECT	= 2		# if ash is invoked with a single directory name
+
+# dictionary of settings for global access
+SETTINGS			= None
+
+# minimum resolution required for ash
+MIN_WIDTH			= 102
+MIN_HEIGHT			= 22
+
+# minimum dimensions for any particular editor
+MIN_EDITOR_WIDTH	= 15
+MIN_EDITOR_HEIGHT	= 5
+
+# path to the application data directory and configuration files
+APP_DATA_DIR			= os.path.join(os.path.expanduser("~"), ".ash-editor")
+APP_PLUGINS_DIR			= os.path.join(APP_DATA_DIR, "plugins")
+APP_KEYMAPS_DIR			= os.path.join(APP_DATA_DIR, "keymaps")
+APP_THEMES_DIR			= os.path.join(APP_DATA_DIR, "themes")
+
+LOG_FILE 				= os.path.join(APP_DATA_DIR, "log.txt")
+SESSION_FILE			= os.path.join(APP_DATA_DIR, "session.dat")
+SETTINGS_FILE			= os.path.join(APP_DATA_DIR, "settings.dat")
+INSTALLED_THEMES_FILE 	= os.path.join(APP_DATA_DIR, "installed_themes.txt")
+INSTALLED_KEYMAPS_FILE 	= os.path.join(APP_DATA_DIR, "installed_keymaps.txt")
+
+DEFAULT_SHELL			= "bash"
+DEFAULT_TERMINAL		= "gnome-terminal"
