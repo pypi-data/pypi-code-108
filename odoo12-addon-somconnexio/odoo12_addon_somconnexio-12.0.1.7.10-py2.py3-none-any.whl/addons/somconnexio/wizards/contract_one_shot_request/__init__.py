@@ -1,0 +1,1 @@
+from . import contract_one_shot_request
