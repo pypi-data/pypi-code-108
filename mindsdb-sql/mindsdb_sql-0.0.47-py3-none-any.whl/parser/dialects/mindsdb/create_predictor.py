@@ -1,0 +1,94 @@
+import json
+from mindsdb_sql.parser.ast.base import ASTNode
+from mindsdb_sql.parser.utils import indent
+
+
+class CreatePredictor(ASTNode):
+    def __init__(self,
+                 name,
+                 integration_name,
+                 query_str,
+                 targets,
+                 datasource_name=None,
+                 order_by=None,
+                 group_by=None,
+                 window=None,
+                 horizon=None,
+                 using=None,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = name
+        self.integration_name = integration_name
+        self.query_str = query_str
+        self.targets = targets
+        self.datasource_name = datasource_name
+        self.order_by = order_by
+        self.group_by = group_by
+        self.window = window
+        self.horizon = horizon
+        self.using = using
+
+    def to_tree(self, *args, level=0, **kwargs):
+        ind = indent(level)
+        ind1 = indent(level+1)
+
+        name_str = f'\n{ind1}name={self.name.to_tree()},'
+        integration_name_str = f'\n{ind1}integration_name={self.integration_name.to_tree()},'
+        query_str = f'\n{ind1}query={self.query_str},'
+
+        datasource_name_str = ''
+        if self.datasource_name:
+            datasource_name_str = f'\n{ind1}datasource_name={self.datasource_name.to_tree()},'
+
+        target_trees = ',\n'.join([t.to_tree(level=level+2) for t in self.targets])
+        targets_str = f'\n{ind1}targets=[\n{target_trees}\n{ind1}],'
+
+        group_by_str = ''
+        if self.group_by:
+            group_by_trees = ',\n'.join([t.to_tree(level=level+2) for t in self.group_by])
+            group_by_str = f'\n{ind1}group_by=[\n{group_by_trees}\n{ind1}],'
+
+        order_by_str = ''
+        if self.order_by:
+            order_by_trees = ',\n'.join([t.to_tree(level=level + 2) for t in self.order_by])
+            order_by_str = f'\n{ind1}order_by=[\n{order_by_trees}\n{ind1}],'
+
+        window_str = f'\n{ind1}window={repr(self.window)},'
+        horizon_str = f'\n{ind1}horizon={repr(self.horizon)},'
+        using_str = f'\n{ind1}using={repr(self.using)},'
+
+        out_str = f'{ind}CreatePredictor(' \
+                  f'{name_str}' \
+                  f'{integration_name_str}' \
+                  f'{query_str}' \
+                  f'{datasource_name_str}' \
+                  f'{targets_str}' \
+                  f'{order_by_str}' \
+                  f'{group_by_str}' \
+                  f'{window_str}' \
+                  f'{horizon_str}' \
+                  f'{using_str}' \
+                  f'\n{ind})'
+        return out_str
+
+    def get_string(self, *args, **kwargs):
+        targets_str = ', '.join([out.to_string() for out in self.targets])
+        order_by_str = f'ORDER BY {", ".join([out.to_string() for out in self.order_by])} ' if self.order_by else ''
+        group_by_str = f'GROUP BY {", ".join([out.to_string() for out in self.group_by])} ' if self.group_by else ''
+        window_str = f'WINDOW {self.window} ' if self.window is not None else ''
+        horizon_str = f'HORIZON {self.horizon} ' if self.horizon is not None else ''
+        using_str = f'USING {json.dumps(self.using)}' if self.using is not None else ''
+        datasource_name_str = f'AS {self.datasource_name.to_string()} ' if self.datasource_name is not None else ''
+
+        query_str = self.query_str
+
+        out_str = f'CREATE PREDICTOR {self.name.to_string()} FROM {self.integration_name.to_string()} WITH ({query_str}) ' \
+                  f'{datasource_name_str}' \
+                  f'PREDICT {targets_str} ' \
+                  f'{order_by_str}' \
+                  f'{group_by_str}' \
+                  f'{window_str}' \
+                  f'{horizon_str}' \
+                  f'{using_str}'
+
+        return out_str.strip()
