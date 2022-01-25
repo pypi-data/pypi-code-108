@@ -1,0 +1,89 @@
+import json
+
+from django.http import HttpResponse
+
+from django_forest.utils import get_token
+from django_forest.utils.permissions import Permission
+
+
+class PermissionMiddleware:
+    mapping = {
+        'list': {
+            'GET': 'browseEnabled',
+            'POST': 'addEnabled',
+            'PUT': 'editEnabled',
+            'DELETE': 'deleteEnabled'
+        },
+        'detail': {
+            'GET': 'readEnabled',
+            'PUT': 'editEnabled',
+            'DELETE': 'deleteEnabled'
+        },
+        'count': {
+            'GET': 'browseEnabled'
+        },
+        'csv': {
+            'GET': 'exportEnabled'
+        },
+        'liveQueries': {
+            'POST': 'liveQueries'
+        },
+        'statsWithParameters': {
+            'POST': 'statsWithParameters'
+        }
+    }
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+        # One-time configuration and initialization.
+
+    def __call__(self, request):
+        # Code to be executed for each request before
+        # the view (and later middleware) are called.
+
+        response = self.get_response(request)
+
+        # Code to be executed for each request/response after
+        # the view is called.
+
+        return response
+
+    def populate_query_request_info(self, permission_name, body, kwargs):
+        if permission_name in 'liveQueries':
+            kwargs['query_request_info'] = body['query']
+        elif permission_name in 'statsWithParameters':
+            if 'timezone' in body:
+                del body['timezone']
+            kwargs['query_request_info'] = body
+
+    def is_authorized(self, request, token, resource):
+        permission_name = self.mapping[request.resolver_match.url_name][request.method]
+
+        kwargs = {}
+        if permission_name in ('liveQueries', 'statsWithParameters'):
+            body = json.loads(request.body.decode('utf-8'))
+            self.populate_query_request_info(permission_name, body, kwargs)
+
+        permission = Permission(resource,
+                                permission_name,
+                                token['rendering_id'],
+                                token['id'],
+                                **kwargs)
+        if not Permission.is_authorized(permission):
+            raise Exception('not authorized')
+
+    def get_resource(self, args):
+        resource = None
+        if 'resource' in args[1]:
+            resource = args[1]['resource']
+        return resource
+
+    def process_view(self, request, view_func, *args, **kwargs):
+        if request.resolver_match.app_name.startswith('django_forest:resources') or \
+                request.resolver_match.app_name.startswith('django_forest:stats'):
+            try:
+                token = get_token(request)
+                resource = self.get_resource(args)
+                self.is_authorized(request, token, resource)
+            except Exception:
+                return HttpResponse(status=403)
