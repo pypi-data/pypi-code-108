@@ -1,0 +1,1 @@
+from igi_diskos_reader.app import DiskosFileTransformer
