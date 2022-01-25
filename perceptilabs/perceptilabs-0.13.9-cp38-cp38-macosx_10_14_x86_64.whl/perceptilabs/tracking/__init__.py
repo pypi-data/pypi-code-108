@@ -1,0 +1,10 @@
+from perceptilabs.tracking.model_recommended import send_model_recommended
+from perceptilabs.tracking.training_completed import send_training_completed
+from perceptilabs.tracking.training_started import send_training_started
+from perceptilabs.tracking.training_stopped import send_training_stopped
+from perceptilabs.tracking.model_exported import send_model_exported
+from perceptilabs.tracking.model_served import send_model_served
+from perceptilabs.tracking.testing_completed import send_testing_completed
+from perceptilabs.tracking.data_selected import send_data_selected
+from perceptilabs.tracking.user_email_set import send_user_email_set
+
