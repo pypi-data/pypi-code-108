@@ -1,0 +1,328 @@
+import requests, datetime
+from requests.structures import CaseInsensitiveDict
+
+def makeEarnAppRequest(endpoint: str, reqType: str, cookies: dict, timeout: int, data: dict = {}, proxy: dict = {}) -> requests.Response:
+    """
+    Make a request to the EarnApp API to a given endpoint
+    :param endpoint: the API endpoint to request
+    :param reqType: GET, POST, DELETE or PUT
+    :param cookies: authentication cookies to send with the request
+    :param data (optional): data to send along with the requst
+    :return: response object
+    """
+    
+    if reqType == "GET": # if we need to do a GET request
+        if proxy != {}: # if we need to use a proxy
+            resp = requests.get("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, proxies=proxy, timeout=timeout) # do the GET request with the cookies required to the correct endpoint using proxy
+        else:
+            resp = requests.get("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, timeout=timeout) # do the GET request with the cookies required to the correct endpoint
+    elif reqType == "POST": # if we need to do a POST request
+        if proxy != {}: # if we need to use a proxy
+            resp = requests.post("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, data=data, proxies=proxy, timeout=timeout) # do the POST request with the cookies required to the correct endpoint with the data using proxy
+        else:
+            resp = requests.post("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, data=data, timeout=timeout) # do the POST request with the cookies required to the correct endpoint with the data
+    elif reqType == "DELETE": # if we need to do a DELETE request
+        if proxy != {}: # if we need to use a proxy
+            resp = requests.delete("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, proxies=proxy, timeout=timeout) # do the DELETE request with the cookies required to the correct endpoint using proxy
+        else:
+            resp = requests.delete("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, timeout=timeout) # do the DELETE request with the cookies required to the correct endpoint
+    elif reqType == "PUT": # if we need to do a PUT request
+        if proxy != {}: # if we need to use a proxy
+            resp = requests.put("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, data=data, proxies=proxy, timeout=timeout) # do the PUT request with the cookies required to the correct endpoint with the data using proxy
+        else:
+            resp = requests.put("https://earnapp.com/dashboard/api/" + endpoint + "?appid=earnapp_dashboard", cookies=cookies, data=data, timeout=timeout) # do the PUT request with the cookies required to the correct endpoint with the data
+    else:
+        return None
+    return resp
+
+class RatelimitedException(Exception):
+    pass
+
+class IncorrectTokenException(Exception):
+    pass
+
+class JSONDecodeErrorException(Exception):
+    pass
+
+class User:
+    cookies = {}
+    proxy = {}
+    timeout = 10 # default timeout for requests
+
+    def setProxy(self, proxy: dict) -> bool:
+        """
+        Set the proxy for the requests
+        :param proxy: proxy dictionary
+        :return: True
+        """
+        
+        self.proxy = proxy # set the proxy
+        return True
+
+    def login(self, token: str, method: str="google") -> bool:
+        """
+        Attempt to log in to the EarnApp account by requesting the user_data endpoint and if it succeeds, it will write that data to the cookies variable
+        :param token: oauth-refresh-token from the EarnApp dashboard
+        :param method (optional): login method, only current option is google.
+        :return: True on successful login, False otherwise
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("user_data", "GET", {"auth-method": method, "oauth-refresh-token": token}, self.timeout, proxy=self.proxy) # test the login data with the user_data endpoint with the proxy
+        else:
+            resp = makeEarnAppRequest("user_data", "GET", {"auth-method": method, "oauth-refresh-token": token}, self.timeout) # test the login data with the user_data endpoint
+        
+        if resp.status_code == 200: # if the cookies were valid
+            self.cookies = {"auth-method": method, "oauth-refresh-token": token} # save the cookies to the variable
+            # return the right value depending on succeeding/failing
+            return True
+        raise IncorrectTokenException(token + " is not correct") # if the token was invalid, raise an exception
+        
+    def userData(self) -> dict:
+        """
+        Get data about the logged in user
+        :return: a dictionary containing the user data
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("user_data", "GET", self.cookies, self.timeout, proxy=self.proxy) # get the user data with the proxy
+        else:
+            resp = makeEarnAppRequest("user_data", "GET", self.cookies, self.timeout) # get the user data
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def money(self) -> dict:
+        """
+        Get data about the logged in user's money (current balance, payment method, etc)
+        :return: a dictionary containing the user's money data
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("money", "GET", self.cookies, self.timeout, proxy=self.proxy) # get the money data with the proxy
+        else:
+            resp = makeEarnAppRequest("money", "GET", self.cookies, self.timeout) # get the device data
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def devices(self) -> dict:
+        """
+        Get data about the logged in user's devices (device IDs, rate, amount earnt, etc)
+        :return: a dictionary containing the user's device data
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("devices", "GET", self.cookies, self.timeout, proxy=self.proxy) # get the device data with the proxy
+        else:
+            resp = makeEarnAppRequest("devices", "GET", self.cookies, self.timeout) # get the device data
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def appVersions(self) -> dict:
+        """
+        Get the latest app version
+        :return: a dictionary containing the latest version
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("app_versions", "GET", self.cookies, self.timeout, proxy=self.proxy) # get the app version with the proxy
+        else:
+            resp = makeEarnAppRequest("app_versions", "GET", self.cookies, self.timeout) # get the version
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def paymentMethods(self) -> dict:
+        """
+        Get all available payment methods
+        :return: a dictionary containing all available payment methods
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("payment_methods", "GET", self.cookies, self.timeout, proxy=self.proxy) # get the payment methods with the proxy
+        else:
+            resp = makeEarnAppRequest("payment_methods", "GET", self.cookies, self.timeout) # get payment methods
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def transactions(self) -> dict:
+        """
+        Get past transactions and their status
+        :return: a dictionary containing past transactions
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("transactions", "GET", self.cookies, self.timeout, proxy=self.proxy) # get the transactions with the proxy
+        else:
+            resp = makeEarnAppRequest("transactions", "GET", self.cookies, self.timeout) # get all transactions
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def linkDevice(self, deviceID: str) -> dict:
+        """
+        Link a device to the logged in EarnApp account
+        :param deviceID: EarnApp device ID to link to account
+        :return: a dictionary containing error message/success
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("link_device", "POST", self.cookies, self.timeout, {"uuid": deviceID}, proxy=self.proxy) # send request with proxy
+        else:
+            resp = makeEarnAppRequest("link_device", "POST", self.cookies, self.timeout, {"uuid": deviceID}) # send request
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+
+    def hideDevice(self, deviceID: str) -> dict:
+        """
+        Hide a device from the logged in EarnApp account
+        :param deviceID: EarnApp device ID to hide from account
+        :return: a dictionary containing error message/success
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("device/" + deviceID, "PUT", self.cookies, self.timeout, {"hide_ts": datetime.datetime.now().isoformat()}, proxy=self.proxy) # send request with proxy
+        else:
+            resp = makeEarnAppRequest("device/" + deviceID, "PUT", self.cookies, self.timeout, {"hide_ts": datetime.datetime.now().isoformat()}) # send request
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+
+    def showDevice(self, deviceID: str) -> dict:
+        """
+        Show a device on the logged in EarnApp account
+        :param deviceID: EarnApp device ID to show on account
+        :return: a dictionary containing error message/success
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("device/" + deviceID, "PUT", self.cookies, self.timeout, {"hide_ts": None}, proxy=self.proxy)
+        else:
+            resp = makeEarnAppRequest("device/" + deviceID, "PUT", self.cookies, self.timeout, {"hide_ts": None})
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+
+    def renameDevice(self, deviceID: str, name: str) -> dict:
+        """
+        Rename a device
+        :param deviceID: EarnApp device ID to rename
+        :param name: new name for the device
+        :return: a dictionary containing error message/success
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("device/" + deviceID, "PUT", self.cookies, self.timeout, {"name": name}, proxy=self.proxy) # send request with proxy
+        else:
+            resp = makeEarnAppRequest("device/" + deviceID, "PUT", self.cookies, self.timeout, {"name": name}) # send request
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
+        
+    def redeemDetails(self, toEmail: str, paymentMethod: str="paypal.com") -> dict:
+        """
+        Change the redeem details of the logged in account
+        :param toEmail: The email address to send payment to
+        :param paymentMethod: optional payment method to send via
+        :return: a dictionary containing error message/success
+        """
+        
+        if self.proxy != {}: # if we have a proxy
+            resp = makeEarnAppRequest("redeem_details", "POST", self.cookies, self.timeout, {"to_email": toEmail, "payment_method": paymentMethod}, proxy=self.proxy) # send request with proxy
+        else:
+            resp = makeEarnAppRequest("redeem_details", "POST", self.cookies, self.timeout, {"to": toEmail, "payment_method": paymentMethod}) # send request
+        
+        if resp.status_code == 429: # if the user is ratelimited
+            raise RatelimitedException("You are being ratelimited") # raise an exception
+        elif resp.status_code == 403: # if the user is unauthorized
+            raise IncorrectTokenException(self.cookies["oauth-refresh-token"] + " is not correct") # raise an exception
+
+        try:
+            jsonData = resp.json() # attempt to get the JSON data
+        except:
+            raise JSONDecodeErrorException("Failed to decode JSON data returned from server: " + resp.text) # if the JSON data was invalid, raise an exception
+        return jsonData
