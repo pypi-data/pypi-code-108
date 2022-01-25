@@ -1,0 +1,29 @@
+from django.utils.translation import ugettext_lazy as _
+
+DEFAULT_PROCESS_SIZE = 2
+
+ITEM_STATE_NONE = 1
+ITEM_STATE_ERROR = 2
+ITEM_STATE_QUEUED = 3
+ITEM_STATE_DOWNLOADED = 4
+ITEM_STATE_COMPLETE = 5
+
+ITEM_STATE_CHOICES = (
+    (ITEM_STATE_NONE, _('None')),
+    (ITEM_STATE_ERROR, _('Error')),
+    (ITEM_STATE_QUEUED, _('Queued')),
+    (ITEM_STATE_DOWNLOADED, _('Complete')),
+    (ITEM_STATE_COMPLETE, _('Complete')),
+)
+
+SETUP_STATE_NONE = 1
+SETUP_STATE_ERROR = 2
+SETUP_STATE_POPULATING = 3
+SETUP_STATE_EXECUTING = 4
+
+SETUP_STATE_CHOICES = (
+    (SETUP_STATE_NONE, _('None')),
+    (SETUP_STATE_ERROR, _('Error')),
+    (SETUP_STATE_POPULATING, _('Populating')),
+    (SETUP_STATE_EXECUTING, _('Executing')),
+)
