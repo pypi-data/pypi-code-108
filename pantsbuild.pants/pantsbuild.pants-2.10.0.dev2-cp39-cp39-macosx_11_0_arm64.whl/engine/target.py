@@ -1,0 +1,2455 @@
+# Copyright 2020 Pants project contributors (see CONTRIBUTORS.md).
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+from __future__ import annotations
+
+import collections.abc
+import enum
+import itertools
+import logging
+import os.path
+from abc import ABC, ABCMeta, abstractmethod
+from collections import deque
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import PurePath
+from typing import (
+    Any,
+    ClassVar,
+    Dict,
+    Generic,
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+    get_type_hints,
+)
+
+from typing_extensions import final
+
+from pants.base.deprecated import warn_or_error
+from pants.engine.addresses import Address, UnparsedAddressInputs, assert_single_address
+from pants.engine.collection import Collection, DeduplicatedCollection
+from pants.engine.engine_aware import EngineAwareParameter
+from pants.engine.fs import (
+    GlobExpansionConjunction,
+    GlobMatchErrorBehavior,
+    PathGlobs,
+    Paths,
+    Snapshot,
+)
+from pants.engine.unions import UnionMembership, UnionRule, union
+from pants.option.global_options import FilesNotFoundBehavior
+from pants.source.filespec import Filespec, matches_filespec
+from pants.util.collections import ensure_list, ensure_str_list
+from pants.util.dirutil import fast_relpath
+from pants.util.docutil import doc_url
+from pants.util.frozendict import FrozenDict
+from pants.util.memo import memoized_classproperty, memoized_method, memoized_property
+from pants.util.meta import frozen_after_init
+from pants.util.ordered_set import FrozenOrderedSet
+from pants.util.strutil import bullet_list, pluralize
+
+logger = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------------------------
+# Core Field abstractions
+# -----------------------------------------------------------------------------------------------
+
+# Type alias to express the intent that the type should be immutable and hashable. There's nothing
+# to actually enforce this, outside of convention. Maybe we could develop a MyPy plugin?
+ImmutableValue = Any
+
+
+@frozen_after_init
+class Field:
+    """A Field.
+
+    The majority of fields should use field templates like `BoolField`, `StringField`, and
+    `StringSequenceField`. These subclasses will provide sensible type hints and validation
+    automatically.
+
+    If you are directly subclassing `Field`, you should likely override `compute_value()`
+    to perform any custom hydration and/or validation, such as converting unhashable types to
+    hashable types or checking for banned values. The returned value must be hashable
+    (and should be immutable) so that this Field may be used by the engine. This means, for
+    example, using tuples rather than lists and using `FrozenOrderedSet` rather than `set`.
+
+    If you plan to use the engine to fully hydrate the value, you can also inherit
+    `AsyncFieldMixin`, which will store an `address: Address` property on the `Field` instance.
+
+    Subclasses should also override the type hints for `value` and `raw_value` to be more precise
+    than `Any`. The type hint for `raw_value` is used to generate documentation, e.g. for
+    `./pants help $target_type`.
+
+    Set the `help` class property with a description, which will be used in `./pants help`. For the
+    best rendering, use soft wrapping (e.g. implicit string concatenation) within paragraphs, but
+    hard wrapping (`\n`) to separate distinct paragraphs and/or lists.
+
+    Example:
+
+        # NB: Really, this should subclass IntField. We only use Field as an example.
+        class Timeout(Field):
+            alias = "timeout"
+            value: Optional[int]
+            default = None
+            help = "A timeout field.\n\nMore information."
+
+            @classmethod
+            def compute_value(cls, raw_value: Optional[int], *, address: Address) -> Optional[int:
+                value_or_default = super().compute_value(raw_value, address=address)
+                if value_or_default is not None and not isinstance(value_or_default, int):
+                    raise ValueError(
+                        "The `timeout` field expects an integer, but was given"
+                        f"{value_or_default} for target {address}."
+                    )
+                return value_or_default
+    """
+
+    # Subclasses must define these.
+    alias: ClassVar[str]
+    help: ClassVar[str]
+
+    # Subclasses must define at least one of these two.
+    default: ClassVar[ImmutableValue]
+    required: ClassVar[bool] = False
+
+    # Subclasses may define these.
+    removal_version: ClassVar[str | None] = None
+    removal_hint: ClassVar[str | None] = None
+
+    deprecated_alias: ClassVar[str | None] = None
+    deprecated_alias_removal_version: ClassVar[str | None] = None
+
+    @final
+    def __init__(self, raw_value: Optional[Any], address: Address) -> None:
+        self._check_deprecated(raw_value, address)
+        self.value: Optional[ImmutableValue] = self.compute_value(raw_value, address)
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[Any], address: Address) -> ImmutableValue:
+        """Convert the `raw_value` into `self.value`.
+
+        You should perform any optional validation and/or hydration here. For example, you may want
+        to check that an integer is > 0 or convert an `Iterable[str]` to `List[str]`.
+
+        The resulting value must be hashable (and should be immutable).
+        """
+        if raw_value is None:
+            if cls.required:
+                raise RequiredFieldMissingException(address, cls.alias)
+            return cls.default
+        return raw_value
+
+    @classmethod
+    def _check_deprecated(cls, raw_value: Optional[Any], address: Address) -> None:
+        if not cls.removal_version or address.is_generated_target or raw_value is None:
+            return
+        if not cls.removal_hint:
+            raise ValueError(
+                f"You specified `removal_version` for {cls}, but not the class property "
+                "`removal_hint`."
+            )
+        warn_or_error(
+            cls.removal_version,
+            entity=f"the {repr(cls.alias)} field",
+            hint=(f"Using the `{cls.alias}` field in the target {address}. {cls.removal_hint}"),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__}(alias={repr(self.alias)}, value={repr(self.value)}, "
+            f"default={repr(self.default)})"
+        )
+
+    def __str__(self) -> str:
+        return f"{self.alias}={self.value}"
+
+    def __hash__(self) -> int:
+        return hash((self.__class__, self.value))
+
+    def __eq__(self, other: Union[Any, Field]) -> bool:
+        if not isinstance(other, Field):
+            return NotImplemented
+        return (self.__class__, self.value) == (other.__class__, other.value)
+
+
+# NB: By subclassing `Field`, MyPy understands our type hints, and it means it doesn't matter which
+# order you use for inheriting the field template vs. the mixin.
+class AsyncFieldMixin(Field):
+    """A mixin to store the field's original `Address` for use during hydration by the engine.
+
+    Typically, you should also create a dataclass representing the hydrated value and another for
+    the request, then a rule to go from the request to the hydrated value. The request class should
+    store the async field as a property.
+
+    (Why use the request class as the rule input, rather than the field itself? It's a wrapper so
+    that subclasses of the async field work properly, given that the engine uses exact type IDs.
+    This is like WrappedTarget.)
+
+    For example:
+
+        class Sources(StringSequenceField, AsyncFieldMixin):
+            alias = "sources"
+
+            # Often, async fields will want to define entry points like this to allow subclasses to
+            # change behavior.
+            def validate_resolved_files(self, files: Sequence[str]) -> None:
+                pass
+
+
+        @dataclass(frozen=True)
+        class HydrateSourcesRequest:
+            field: Sources
+
+
+        @dataclass(frozen=True)
+        class HydratedSources:
+            snapshot: Snapshot
+
+
+        @rule
+        def hydrate_sources(request: HydrateSourcesRequest) -> HydratedSources:
+            result = await Get(Snapshot, PathGlobs(request.field.value))
+            request.field.validate_resolved_files(result.files)
+            ...
+            return HydratedSources(result)
+
+    Then, call sites can `await Get` if they need to hydrate the field, even if they subclassed
+    the original async field to have custom behavior:
+
+        sources1 = await Get(HydratedSources, HydrateSourcesRequest(my_tgt.get(Sources)))
+        sources2 = await Get(HydratedSources, HydrateSourcesRequest(custom_tgt.get(CustomSources)))
+    """
+
+    @final  # type: ignore[misc]
+    def __init__(self, raw_value: Optional[Any], address: Address) -> None:
+        super().__init__(raw_value, address)
+        # We must temporarily unfreeze the field, but then we refreeze to continue avoiding
+        # subclasses from adding arbitrary fields.
+        self._unfreeze_instance()  # type: ignore[attr-defined]
+        # N.B.: We store the address here and not in the Field base class, because the memory usage
+        # of storing this value in every field was shown to be excessive / lead to performance
+        # issues.
+        self.address = address
+        self._freeze_instance()  # type: ignore[attr-defined]
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__}(alias={repr(self.alias)}, address={self.address}, "
+            f"value={repr(self.value)}, default={repr(self.default)})"
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.__class__, self.value, self.address))
+
+    def __eq__(self, other: Union[Any, AsyncFieldMixin]) -> bool:
+        if not isinstance(other, AsyncFieldMixin):
+            return NotImplemented
+        return (self.__class__, self.value, self.address) == (
+            other.__class__,
+            other.value,
+            other.address,
+        )
+
+
+# -----------------------------------------------------------------------------------------------
+# Core Target abstractions
+# -----------------------------------------------------------------------------------------------
+
+# NB: This TypeVar is what allows `Target.get()` to properly work with MyPy so that MyPy knows
+# the precise Field returned.
+_F = TypeVar("_F", bound=Field)
+
+
+@frozen_after_init
+class Target:
+    """A Target represents an addressable set of metadata.
+
+    Set the `help` class property with a description, which will be used in `./pants help`. For the
+    best rendering, use soft wrapping (e.g. implicit string concatenation) within paragraphs, but
+    hard wrapping (`\n`) to separate distinct paragraphs and/or lists.
+    """
+
+    # Subclasses must define these
+    alias: ClassVar[str]
+    core_fields: ClassVar[Tuple[Type[Field], ...]]
+    help: ClassVar[str]
+
+    removal_version: ClassVar[str | None] = None
+    removal_hint: ClassVar[str | None] = None
+
+    deprecated_alias: ClassVar[str | None] = None
+    deprecated_alias_removal_version: ClassVar[str | None] = None
+
+    # These get calculated in the constructor
+    address: Address
+    plugin_fields: tuple[type[Field], ...]
+    field_values: FrozenDict[type[Field], Field]
+    residence_dir: str
+
+    @final
+    def __init__(
+        self,
+        unhydrated_values: dict[str, Any],
+        address: Address,
+        # NB: `union_membership` is only optional to facilitate tests. In production, we should
+        # always provide this parameter. This should be safe to do because production code should
+        # rarely directly instantiate Targets and should instead use the engine to request them.
+        union_membership: UnionMembership | None = None,
+        *,
+        residence_dir: str | None = None,
+    ) -> None:
+        """Create a target.
+
+        :param unhydrated_values: A mapping of field aliases to their raw values. Any left off
+            fields will either use their default or error if required=True.
+        :param address: How to uniquely identify this target.
+        :param union_membership: Used to determine plugin fields. This must be set in production!
+        :param residence_dir: Where this target "lives". If unspecified, will be the `spec_path`
+            of the `address`, i.e. where the target was either explicitly defined or where its
+            target generator was explicitly defined. Target generators can, however, set this to
+            the directory where the generated target provides metadata for. For example, a
+            file-based target like `python_source` should set this to the parent directory of
+            its file. A file-less target like `go_third_party_package` should keep the default of
+            `address.spec_path`. This field impacts how command line specs work, so that globs
+            like `dir:` know whether to match the target or not.
+        """
+        if self.removal_version and not address.is_generated_target:
+            if not self.removal_hint:
+                raise ValueError(
+                    f"You specified `removal_version` for {self.__class__}, but not "
+                    "the class property `removal_hint`."
+                )
+            warn_or_error(
+                self.removal_version,
+                entity=f"the {repr(self.alias)} target type",
+                hint=f"Using the `{self.alias}` target type for {address}. {self.removal_hint}",
+            )
+
+        self.address = address
+        self.plugin_fields = self._find_plugin_fields(union_membership or UnionMembership({}))
+        self.residence_dir = residence_dir if residence_dir is not None else address.spec_path
+        self.field_values = self._calculate_field_values(unhydrated_values, address)
+        self.validate()
+
+    @final
+    def _calculate_field_values(
+        self, unhydrated_values: dict[str, Any], address: Address
+    ) -> FrozenDict[type[Field], Field]:
+        field_values = {}
+        valid_aliases = set()
+        aliases_to_field_types = {}
+        for field_type in self.field_types:
+            valid_aliases.add(field_type.alias)
+            aliases_to_field_types[field_type.alias] = field_type
+            if field_type.deprecated_alias is not None:
+                aliases_to_field_types[field_type.deprecated_alias] = field_type
+        for alias, value in unhydrated_values.items():
+            if alias not in aliases_to_field_types:
+                raise InvalidFieldException(
+                    f"Unrecognized field `{alias}={value}` in target {address}. Valid fields for "
+                    f"the target type `{self.alias}`: {sorted(valid_aliases)}.",
+                )
+            field_type = aliases_to_field_types[alias]
+            field_values[field_type] = field_type(value, address)
+
+        # For undefined fields, mark the raw value as None.
+        for field_type in set(self.field_types) - set(field_values.keys()):
+            field_values[field_type] = field_type(None, address)
+        return FrozenDict(
+            sorted(
+                field_values.items(),
+                key=lambda field_type_to_val_pair: field_type_to_val_pair[0].alias,
+            )
+        )
+
+    @final
+    @property
+    def field_types(self) -> Tuple[Type[Field], ...]:
+        return (*self.core_fields, *self.plugin_fields)
+
+    @final
+    @memoized_classproperty
+    def _plugin_field_cls(cls) -> type:
+        # NB: We ensure that each Target subtype has its own `PluginField` class so that
+        # registering a plugin field doesn't leak across target types.
+
+        @union
+        class PluginField:
+            pass
+
+        return PluginField
+
+    def __repr__(self) -> str:
+        fields = ", ".join(str(field) for field in self.field_values.values())
+        return (
+            f"{self.__class__}("
+            f"address={self.address}, "
+            f"alias={repr(self.alias)}, "
+            f"residence_dir={repr(self.residence_dir)}, "
+            f"{fields})"
+        )
+
+    def __str__(self) -> str:
+        fields = ", ".join(str(field) for field in self.field_values.values())
+        address = f"address=\"{self.address}\"{', ' if fields else ''}"
+        return f"{self.alias}({address}{fields})"
+
+    def __hash__(self) -> int:
+        return hash((self.__class__, self.address, self.residence_dir, self.field_values))
+
+    def __eq__(self, other: Union[Target, Any]) -> bool:
+        if not isinstance(other, Target):
+            return NotImplemented
+        return (self.__class__, self.address, self.residence_dir, self.field_values) == (
+            other.__class__,
+            other.address,
+            other.residence_dir,
+            other.field_values,
+        )
+
+    @final
+    @classmethod
+    def _find_plugin_fields(cls, union_membership: UnionMembership) -> tuple[type[Field], ...]:
+        return cast(Tuple[Type[Field], ...], tuple(union_membership.get(cls._plugin_field_cls)))
+
+    @final
+    @classmethod
+    def _find_registered_field_subclass(
+        cls, requested_field: Type[_F], *, registered_fields: Iterable[Type[Field]]
+    ) -> Optional[Type[_F]]:
+        """Check if the Target has registered a subclass of the requested Field.
+
+        This is necessary to allow targets to override the functionality of common fields. For
+        example, you could subclass `Tags` to define `CustomTags` with a different default. At the
+        same time, we still want to be able to call `tgt.get(Tags)`, in addition to
+        `tgt.get(CustomTags)`.
+        """
+        subclass = next(
+            (
+                registered_field
+                for registered_field in registered_fields
+                if issubclass(registered_field, requested_field)
+            ),
+            None,
+        )
+        return cast(Optional[Type[_F]], subclass)
+
+    @final
+    def _maybe_get(self, field: Type[_F]) -> Optional[_F]:
+        result = self.field_values.get(field, None)
+        if result is not None:
+            return cast(_F, result)
+        field_subclass = self._find_registered_field_subclass(
+            field, registered_fields=self.field_types
+        )
+        if field_subclass is not None:
+            return cast(_F, self.field_values[field_subclass])
+        return None
+
+    @final
+    def __getitem__(self, field: Type[_F]) -> _F:
+        """Get the requested `Field` instance belonging to this target.
+
+        If the `Field` is not registered on this `Target` type, this method will raise a
+        `KeyError`. To avoid this, you should first call `tgt.has_field()` or `tgt.has_fields()`
+        to ensure that the field is registered, or, alternatively, use `Target.get()`.
+
+        See the docstring for `Target.get()` for how this method handles subclasses of the
+        requested Field and for tips on how to use the returned value.
+        """
+        result = self._maybe_get(field)
+        if result is not None:
+            return result
+        raise KeyError(
+            f"The target `{self}` does not have a field `{field.__name__}`. Before calling "
+            f"`my_tgt[{field.__name__}]`, call `my_tgt.has_field({field.__name__})` to "
+            f"filter out any irrelevant Targets or call `my_tgt.get({field.__name__})` to use the "
+            f"default Field value."
+        )
+
+    @final
+    def get(self, field: Type[_F], *, default_raw_value: Optional[Any] = None) -> _F:
+        """Get the requested `Field` instance belonging to this target.
+
+        This will return an instance of the requested field type, e.g. an instance of
+        `InterpreterConstraints`, `SourcesField`, `EntryPoint`, etc. Usually, you will want to
+        grab the `Field`'s inner value, e.g. `tgt.get(Compatibility).value`. (For async fields like
+        `SourcesField`, you may need to hydrate the value.).
+
+        This works with subclasses of `Field`s. For example, if you subclass `Tags`
+        to define a custom subclass `CustomTags`, both `tgt.get(Tags)` and
+        `tgt.get(CustomTags)` will return the same `CustomTags` instance.
+
+        If the `Field` is not registered on this `Target` type, this will return an instance of
+        the requested Field by using `default_raw_value` to create the instance. Alternatively,
+        first call `tgt.has_field()` or `tgt.has_fields()` to ensure that the field is registered,
+        or, alternatively, use indexing (e.g. `tgt[Compatibility]`) to raise a KeyError when the
+        field is not registered.
+        """
+        result = self._maybe_get(field)
+        if result is not None:
+            return result
+        return field(default_raw_value, self.address)
+
+    @final
+    @classmethod
+    def _has_fields(
+        cls, fields: Iterable[Type[Field]], *, registered_fields: Iterable[Type[Field]]
+    ) -> bool:
+        unrecognized_fields = [field for field in fields if field not in registered_fields]
+        if not unrecognized_fields:
+            return True
+        for unrecognized_field in unrecognized_fields:
+            maybe_subclass = cls._find_registered_field_subclass(
+                unrecognized_field, registered_fields=registered_fields
+            )
+            if maybe_subclass is None:
+                return False
+        return True
+
+    @final
+    def has_field(self, field: Type[Field]) -> bool:
+        """Check that this target has registered the requested field.
+
+        This works with subclasses of `Field`s. For example, if you subclass `Tags` to define a
+        custom subclass `CustomTags`, both `tgt.has_field(Tags)` and
+        `python_tgt.has_field(CustomTags)` will return True.
+        """
+        return self.has_fields([field])
+
+    @final
+    def has_fields(self, fields: Iterable[Type[Field]]) -> bool:
+        """Check that this target has registered all of the requested fields.
+
+        This works with subclasses of `Field`s. For example, if you subclass `Tags` to define a
+        custom subclass `CustomTags`, both `tgt.has_fields([Tags])` and
+        `python_tgt.has_fields([CustomTags])` will return True.
+        """
+        return self._has_fields(fields, registered_fields=self.field_types)
+
+    @final
+    @classmethod
+    def class_field_types(cls, union_membership: UnionMembership) -> Tuple[Type[Field], ...]:
+        """Return all registered Fields belonging to this target type.
+
+        You can also use the instance property `tgt.field_types` to avoid having to pass the
+        parameter UnionMembership.
+        """
+        return (*cls.core_fields, *cls._find_plugin_fields(union_membership))
+
+    @final
+    @classmethod
+    def class_has_field(cls, field: Type[Field], union_membership: UnionMembership) -> bool:
+        """Behaves like `Target.has_field()`, but works as a classmethod rather than an instance
+        method."""
+        return cls.class_has_fields([field], union_membership)
+
+    @final
+    @classmethod
+    def class_has_fields(
+        cls, fields: Iterable[Type[Field]], union_membership: UnionMembership
+    ) -> bool:
+        """Behaves like `Target.has_fields()`, but works as a classmethod rather than an instance
+        method."""
+        return cls._has_fields(fields, registered_fields=cls.class_field_types(union_membership))
+
+    @final
+    @classmethod
+    def class_get_field(cls, field: Type[_F], union_membership: UnionMembership) -> Type[_F]:
+        """Get the requested Field type registered with this target type.
+
+        This will error if the field is not registered, so you should call Target.class_has_field()
+        first.
+        """
+        class_fields = cls.class_field_types(union_membership)
+        result = next(
+            (
+                registered_field
+                for registered_field in class_fields
+                if issubclass(registered_field, field)
+            ),
+            None,
+        )
+        if result is None:
+            raise KeyError(
+                f"The target type `{cls.alias}` does not have a field `{field.__name__}`. Before "
+                f"calling `TargetType.class_get_field({field.__name__})`, call "
+                f"`TargetType.class_has_field({field.__name__})`."
+            )
+        return result
+
+    @final
+    @classmethod
+    def register_plugin_field(cls, field: Type[Field]) -> UnionRule:
+        """Register a new field on the target type.
+
+        In the `rules()` register.py entry-point, include
+        `MyTarget.register_plugin_field(NewField)`. This will register `NewField` as a first-class
+        citizen. Plugins can use this new field like any other.
+        """
+        return UnionRule(cls._plugin_field_cls, field)
+
+    def validate(self) -> None:
+        """Validate the target, such as checking for mutually exclusive fields.
+
+        N.B.: The validation should only be of properties intrinsic to the associated files in any
+        context. If the validation only makes sense for certain goals acting on targets; those
+        validations should be done in the associated rules.
+        """
+
+
+@dataclass(frozen=True)
+class WrappedTarget:
+    """A light wrapper to encapsulate all the distinct `Target` subclasses into a single type.
+
+    This is necessary when using a single target in a rule because the engine expects exact types
+    and does not work with subtypes.
+    """
+
+    target: Target
+
+
+class Targets(Collection[Target]):
+    """A heterogeneous collection of instances of Target subclasses.
+
+    While every element will be a subclass of `Target`, there may be many different `Target` types
+    in this collection, e.g. some `FileTarget` and some `PythonTestTarget`.
+
+    Often, you will want to filter out the relevant targets by looking at what fields they have
+    registered, e.g.:
+
+        valid_tgts = [tgt for tgt in tgts if tgt.has_fields([Compatibility, PythonSources])]
+
+    You should not check the Target's actual type because this breaks custom target types;
+    for example, prefer `tgt.has_field(PythonTestsSourcesField)` to
+    `isinstance(tgt, PythonTestsTarget)`.
+    """
+
+    def expect_single(self) -> Target:
+        assert_single_address([tgt.address for tgt in self])
+        return self[0]
+
+
+class UnexpandedTargets(Collection[Target]):
+    """Like `Targets`, but will not replace target generators with their generated targets (e.g.
+    replace `python_sources` "BUILD targets" with generated `python_source` "file targets")."""
+
+    def expect_single(self) -> Target:
+        assert_single_address([tgt.address for tgt in self])
+        return self[0]
+
+
+class CoarsenedTarget(EngineAwareParameter):
+    def __init__(self, members: Iterable[Target], dependencies: Iterable[CoarsenedTarget]) -> None:
+        """A set of Targets which cyclicly reach one another, and are thus indivisible.
+
+        Instances of this class form a structure-shared DAG, and so a hashcode is pre-computed for the
+        recursive portion.
+
+        :param members: The members of the cycle.
+        :param dependencies: The deduped direct (not transitive) dependencies of all Targets in
+            the cycle. Dependencies between members of the cycle are excluded.
+        """
+        self.members = FrozenOrderedSet(members)
+        self.dependencies = FrozenOrderedSet(dependencies)
+        self._hashcode = hash((self.members, self.dependencies))
+
+    def debug_hint(self) -> str:
+        return str(self)
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"addresses": [t.address.spec for t in self.members]}
+
+    @property
+    def representative(self) -> Target:
+        """A stable "representative" target in the cycle."""
+        return next(iter(self.members))
+
+    def bullet_list(self) -> str:
+        """The addresses and type aliases of all members of the cycle."""
+        return bullet_list(sorted(f"{t.address.spec}\t({type(t).alias})" for t in self.members))
+
+    def __hash__(self) -> int:
+        return self._hashcode
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, CoarsenedTarget):
+            return NotImplemented
+        return (
+            self._hashcode == other._hashcode
+            and self.members == other.members
+            # TODO: Use a recursive memoized __eq__ if this ever shows up in profiles.
+            and self.dependencies == other.dependencies
+        )
+
+    def __str__(self) -> str:
+        if len(self.members) > 1:
+            others = len(self.members) - 1
+            return f"{self.representative.address.spec} (and {others} more)"
+        return self.representative.address.spec
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({str(self)})"
+
+
+class CoarsenedTargets(Collection[CoarsenedTarget]):
+    """The CoarsenedTarget roots of a transitive graph walk for some addresses.
+
+    To collect all reachable CoarsenedTarget members, use `def closure`.
+    """
+
+    def closure(self) -> Iterator[CoarsenedTarget]:
+        """All CoarsenedTargets reachable from these CoarsenedTarget roots."""
+
+        visited = set()
+        queue = deque(self)
+        while queue:
+            ct = queue.popleft()
+            if ct in visited:
+                continue
+            visited.add(ct)
+            yield ct
+            queue.extend(ct.dependencies)
+
+
+@dataclass(frozen=True)
+class TransitiveTargets:
+    """A set of Target roots, and their transitive, flattened, de-duped dependencies.
+
+    If a target root is a dependency of another target root, then it will show up both in `roots`
+    and in `dependencies`.
+    """
+
+    roots: Tuple[Target, ...]
+    dependencies: FrozenOrderedSet[Target]
+
+    @memoized_property
+    def closure(self) -> FrozenOrderedSet[Target]:
+        """The roots and the dependencies combined."""
+        return FrozenOrderedSet([*self.roots, *self.dependencies])
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class TransitiveTargetsRequest:
+    """A request to get the transitive dependencies of the input roots.
+
+    Resolve the transitive targets with `await Get(TransitiveTargets,
+    TransitiveTargetsRequest([addr1, addr2])`.
+    """
+
+    roots: Tuple[Address, ...]
+    include_special_cased_deps: bool
+
+    def __init__(
+        self, roots: Iterable[Address], *, include_special_cased_deps: bool = False
+    ) -> None:
+        self.roots = tuple(roots)
+        self.include_special_cased_deps = include_special_cased_deps
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class RegisteredTargetTypes:
+    aliases_to_types: FrozenDict[str, Type[Target]]
+
+    def __init__(self, aliases_to_types: Mapping[str, Type[Target]]) -> None:
+        self.aliases_to_types = FrozenDict(aliases_to_types)
+
+    @classmethod
+    def create(cls, target_types: Iterable[Type[Target]]) -> RegisteredTargetTypes:
+        result = {}
+        for target_type in sorted(target_types, key=lambda tt: tt.alias):
+            result[target_type.alias] = target_type
+            if target_type.deprecated_alias is not None:
+                result[target_type.deprecated_alias] = target_type
+        return cls(result)
+
+    @property
+    def aliases(self) -> FrozenOrderedSet[str]:
+        return FrozenOrderedSet(self.aliases_to_types.keys())
+
+    @property
+    def types(self) -> FrozenOrderedSet[type[Target]]:
+        return FrozenOrderedSet(self.aliases_to_types.values())
+
+
+class AllTargets(Collection[Target]):
+    """All targets in the project, but with target generators replaced by their generated targets,
+    unlike `AllUnexpandedTargets`."""
+
+
+class AllUnexpandedTargets(Collection[Target]):
+    """All targets in the project, including generated targets.
+
+    This should generally be avoided because it is relatively expensive to compute and is frequently
+    invalidated, but it can be necessary for things like dependency inference to build a global
+    mapping of imports to targets.
+    """
+
+
+@dataclass(frozen=True)
+class AllTargetsRequest:
+    """Find all targets in the project.
+
+    Use with either `AllUnexpandedTargets` or `AllTargets`.
+    """
+
+
+# -----------------------------------------------------------------------------------------------
+# Target generation
+# -----------------------------------------------------------------------------------------------
+
+_Tgt = TypeVar("_Tgt", bound=Target)
+
+
+@union
+@dataclass(frozen=True)
+class GenerateTargetsRequest(Generic[_Tgt]):
+    generate_from: ClassVar[type[_Tgt]]
+    generator: _Tgt
+
+
+class GeneratedTargets(FrozenDict[Address, Target]):
+    """A mapping of the address of generated targets to the targets themselves."""
+
+    def __init__(self, generator: Target, generated_targets: Iterable[Target]) -> None:
+        expected_spec_path = generator.address.spec_path
+        expected_tgt_name = generator.address.target_name
+        mapping = {}
+        for tgt in sorted(generated_targets, key=lambda t: t.address):
+            if tgt.address.spec_path != expected_spec_path:
+                raise InvalidGeneratedTargetException(
+                    "All generated targets must have the same `Address.spec_path` as their "
+                    f"target generator. Expected {generator.address.spec_path}, but got "
+                    f"{tgt.address.spec_path} for target generated from {generator.address}: {tgt}"
+                    "\n\nConsider using `request.generator.address.create_generated()`."
+                )
+            if tgt.address.target_name != expected_tgt_name:
+                raise InvalidGeneratedTargetException(
+                    "All generated targets must have the same `Address.target_name` as their "
+                    f"target generator. Expected {generator.address.target_name}, but got "
+                    f"{tgt.address.target_name} for target generated from {generator.address}: "
+                    f"{tgt}\n\n"
+                    "Consider using `request.generator.address.create_generated()`."
+                )
+            if not tgt.address.is_generated_target:
+                raise InvalidGeneratedTargetException(
+                    "All generated targets must set `Address.generator_name` or "
+                    "`Address.relative_file_path`. Invalid for target generated from "
+                    f"{generator.address}: {tgt}\n\n"
+                    "Consider using `request.generator.address.create_generated()`."
+                )
+            mapping[tgt.address] = tgt
+        super().__init__(mapping)
+
+
+class TargetTypesToGenerateTargetsRequests(FrozenDict[Type[Target], Type[GenerateTargetsRequest]]):
+    def is_generator(self, tgt: Target) -> bool:
+        """Does this target type generate other targets?"""
+        return type(tgt) in self
+
+
+def generate_file_level_targets(
+    generated_target_cls: type[Target],
+    generator: Target,
+    paths: Sequence[str],
+    # NB: Should only ever be set to `None` in tests.
+    union_membership: UnionMembership | None,
+    *,
+    add_dependencies_on_all_siblings: bool,
+    use_generated_address_syntax: bool = False,
+    use_source_field: bool = True,
+    overrides: dict[str, dict[str, Any]] | None = None,
+) -> GeneratedTargets:
+    """Generate one new target for each path, using the same fields as the generator target except
+    for the `sources` field only referring to the path and using a new address.
+
+    Set `add_dependencies_on_all_siblings` to True so that each file-level target depends on all
+    other generated targets from the target generator. This is useful if both are true:
+
+        a) file-level targets usually need their siblings to be present to work. Most target types
+          (Python, Java, Shell, etc) meet this, except for `files` and `resources` which have no
+          concept of "imports"
+        b) dependency inference cannot infer dependencies on sibling files.
+
+    Otherwise, set `add_dependencies_on_all_siblings` to `False` so that dependencies are
+    finer-grained.
+
+    `overrides` allows changing the fields for particular targets. It expects the full file path
+     as the key.
+    """
+    if not generator.has_field(Dependencies) or not generator.has_field(SourcesField):
+        raise AssertionError(
+            f"The `{generator.alias}` target {generator.address.spec} does "
+            "not have both a `dependencies` and `sources` field, and thus cannot generate a "
+            f"`{generated_target_cls.alias}` target."
+        )
+
+    all_generated_addresses = []
+    for fp in paths:
+        relativized_fp = fast_relpath(fp, generator.address.spec_path)
+        all_generated_addresses.append(
+            generator.address.create_generated(relativized_fp)
+            if use_generated_address_syntax
+            else Address(
+                generator.address.spec_path,
+                target_name=generator.address.target_name,
+                relative_file_path=relativized_fp,
+            )
+        )
+
+    all_generated_address_specs = (
+        FrozenOrderedSet(addr.spec for addr in all_generated_addresses)
+        if add_dependencies_on_all_siblings
+        else FrozenOrderedSet()
+    )
+
+    used_overrides = set()
+    normalized_overrides = overrides or {}
+
+    def gen_tgt(full_fp: str, address: Address) -> Target:
+        generated_target_fields: dict[str, ImmutableValue] = {}
+        for field in generator.field_values.values():
+            value: ImmutableValue
+            if isinstance(field, MultipleSourcesField):
+                if not bool(matches_filespec(field.filespec, paths=[full_fp])):
+                    raise AssertionError(
+                        f"Target {generator.address.spec}'s `sources` field does not match a file "
+                        f"{full_fp}."
+                    )
+                value = address._relative_file_path or address.generated_name
+                if use_source_field:
+                    generated_target_fields[SingleSourceField.alias] = value
+                else:
+                    generated_target_fields[MultipleSourcesField.alias] = (value,)
+            elif add_dependencies_on_all_siblings and isinstance(field, Dependencies):
+                generated_target_fields[Dependencies.alias] = (field.value or ()) + tuple(
+                    all_generated_address_specs - {address.spec}
+                )
+            elif isinstance(field, OverridesField):
+                continue
+            elif field.value != field.default:
+                generated_target_fields[field.alias] = field.value
+
+        if full_fp in normalized_overrides:
+            used_overrides.add(full_fp)
+            generated_target_fields.update(normalized_overrides[full_fp])
+
+        return generated_target_cls(
+            generated_target_fields,
+            address,
+            union_membership,
+            residence_dir=os.path.dirname(full_fp),
+        )
+
+    result = tuple(gen_tgt(fp, address) for fp, address in zip(paths, all_generated_addresses))
+
+    unused_overrides = set(normalized_overrides.keys()) - used_overrides
+    if unused_overrides:
+        unused_relative_paths = sorted(
+            fast_relpath(fp, generator.address.spec_path) for fp in unused_overrides
+        )
+        all_valid_relative_paths = sorted(
+            cast(str, tgt.address._relative_file_path or tgt.address.generated_name)
+            for tgt in result
+        )
+        raise InvalidFieldException(
+            f"Unused file paths in the `overrides` field for {generator.address}: "
+            f"{sorted(unused_relative_paths)}"
+            f"\n\nDid you mean one of these valid paths?\n\n"
+            f"{all_valid_relative_paths}\n\n"
+            f"Tip: if you want to override a value for all generated targets, set the ..."
+        )
+
+    return GeneratedTargets(generator, result)
+
+
+# -----------------------------------------------------------------------------------------------
+# FieldSet
+# -----------------------------------------------------------------------------------------------
+
+
+def _get_field_set_fields_from_target(
+    field_set: Type[FieldSet], target: Target
+) -> Dict[str, Field]:
+    all_expected_fields: Dict[str, Type[Field]] = {
+        name: field_type
+        for name, field_type in get_type_hints(field_set).items()
+        if isinstance(field_type, type) and issubclass(field_type, Field)
+    }
+    return {
+        dataclass_field_name: (
+            target[field_cls] if field_cls in field_set.required_fields else target.get(field_cls)
+        )
+        for dataclass_field_name, field_cls in all_expected_fields.items()
+    }
+
+
+_FS = TypeVar("_FS", bound="FieldSet")
+
+
+@dataclass(frozen=True)
+class FieldSet(EngineAwareParameter, metaclass=ABCMeta):
+    """An ad hoc set of fields from a target which are used by rules.
+
+    Subclasses should declare all the fields they consume as dataclass attributes. They should also
+    indicate which of these are required, rather than optional, through the class property
+    `required_fields`. When a field is optional, the default constructor for the field will be used
+    for any targets that do not have that field registered.
+
+    Subclasses must set `@dataclass(frozen=True)` for their declared fields to be recognized.
+
+    You can optionally set implement the classmethod `opt_out` so that targets have a
+    mechanism to not match with the FieldSet even if they have the `required_fields` registered.
+
+    For example:
+
+        @dataclass(frozen=True)
+        class FortranTestFieldSet(FieldSet):
+            required_fields = (FortranSources,)
+
+            sources: FortranSources
+            fortran_version: FortranVersion
+
+            @classmethod
+            def opt_out(cls, tgt: Target) -> bool:
+                return tgt.get(MaybeSkipFortranTestsField).value
+
+    This field set may then created from a `Target` through the `is_applicable()` and `create()`
+    class methods:
+
+        field_sets = [
+            FortranTestFieldSet.create(tgt) for tgt in targets
+            if FortranTestFieldSet.is_applicable(tgt)
+        ]
+
+    FieldSets are consumed like any normal dataclass:
+
+        print(field_set.address)
+        print(field_set.sources)
+    """
+
+    required_fields: ClassVar[Tuple[Type[Field], ...]]
+
+    address: Address
+
+    @classmethod
+    def opt_out(cls, tgt: Target) -> bool:
+        """If `True`, the target will not match with the field set, even if it has the FieldSet's
+        `required_fields`.
+
+        Note: this method is not intended to categorically opt out a target type from a
+        FieldSet, i.e. to always opt out based solely on the target type. While it is possible to
+        do, some error messages will incorrectly suggest that that target is compatible with the
+        FieldSet. Instead, if you need this feature, please ask us to implement it. See
+        https://github.com/pantsbuild/pants/pull/12002 for discussion.
+        """
+        return False
+
+    @final
+    @classmethod
+    def is_applicable(cls, tgt: Target) -> bool:
+        return tgt.has_fields(cls.required_fields) and not cls.opt_out(tgt)
+
+    @final
+    @classmethod
+    def applicable_target_types(
+        cls, target_types: Iterable[Type[Target]], union_membership: UnionMembership
+    ) -> Tuple[Type[Target], ...]:
+        return tuple(
+            tgt_type
+            for tgt_type in target_types
+            if tgt_type.class_has_fields(cls.required_fields, union_membership)
+        )
+
+    @final
+    @classmethod
+    def create(cls: Type[_FS], tgt: Target) -> _FS:
+        return cls(  # type: ignore[call-arg]
+            address=tgt.address, **_get_field_set_fields_from_target(cls, tgt)
+        )
+
+    def debug_hint(self) -> str:
+        return self.address.spec
+
+    def metadata(self) -> Dict[str, Any]:
+        return {"address": self.address.spec}
+
+    def __repr__(self) -> str:
+        # We use a short repr() because this often shows up in stack traces. We don't need any of
+        # the field information because we can ask a user to send us their BUILD file.
+        return f"{self.__class__.__name__}(address={self.address})"
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class TargetRootsToFieldSets(Generic[_FS]):
+    mapping: FrozenDict[Target, Tuple[_FS, ...]]
+
+    def __init__(self, mapping: Mapping[Target, Iterable[_FS]]) -> None:
+        self.mapping = FrozenDict({tgt: tuple(field_sets) for tgt, field_sets in mapping.items()})
+
+    @memoized_property
+    def field_sets(self) -> Tuple[_FS, ...]:
+        return tuple(
+            itertools.chain.from_iterable(
+                field_sets_per_target for field_sets_per_target in self.mapping.values()
+            )
+        )
+
+    @memoized_property
+    def targets(self) -> Tuple[Target, ...]:
+        return tuple(self.mapping.keys())
+
+
+class NoApplicableTargetsBehavior(Enum):
+    ignore = "ignore"
+    warn = "warn"
+    error = "error"
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class TargetRootsToFieldSetsRequest(Generic[_FS]):
+    field_set_superclass: Type[_FS]
+    goal_description: str
+    no_applicable_targets_behavior: NoApplicableTargetsBehavior
+    expect_single_field_set: bool
+
+    def __init__(
+        self,
+        field_set_superclass: Type[_FS],
+        *,
+        goal_description: str,
+        no_applicable_targets_behavior: NoApplicableTargetsBehavior,
+        expect_single_field_set: bool = False,
+    ) -> None:
+        self.field_set_superclass = field_set_superclass
+        self.goal_description = goal_description
+        self.no_applicable_targets_behavior = no_applicable_targets_behavior
+        self.expect_single_field_set = expect_single_field_set
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class FieldSetsPerTarget(Generic[_FS]):
+    # One tuple of FieldSet instances per input target.
+    collection: Tuple[Tuple[_FS, ...], ...]
+
+    def __init__(self, collection: Iterable[Iterable[_FS]]):
+        self.collection = tuple(tuple(iterable) for iterable in collection)
+
+    @memoized_property
+    def field_sets(self) -> Tuple[_FS, ...]:
+        return tuple(itertools.chain.from_iterable(self.collection))
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class FieldSetsPerTargetRequest(Generic[_FS]):
+    field_set_superclass: Type[_FS]
+    targets: Tuple[Target, ...]
+
+    def __init__(self, field_set_superclass: Type[_FS], targets: Iterable[Target]):
+        self.field_set_superclass = field_set_superclass
+        self.targets = tuple(targets)
+
+
+# -----------------------------------------------------------------------------------------------
+# Exception messages
+# -----------------------------------------------------------------------------------------------
+
+
+class InvalidTargetException(Exception):
+    """Use when there's an issue with the target, e.g. mutually exclusive fields set.
+
+    Suggested template:
+
+         f"The `{repr(alias)}` target {address} ..."
+    """
+
+
+class InvalidGeneratedTargetException(InvalidTargetException):
+    pass
+
+
+class InvalidFieldException(Exception):
+    """Use when there's an issue with a particular field.
+
+    Suggested template:
+
+         f"The {repr(alias)} field in target {address} must ..., but ..."
+    """
+
+
+class InvalidFieldTypeException(InvalidFieldException):
+    """This is used to ensure that the field's value conforms with the expected type for the field,
+    e.g. `a boolean` or `a string` or `an iterable of strings and integers`."""
+
+    def __init__(
+        self, address: Address, field_alias: str, raw_value: Optional[Any], *, expected_type: str
+    ) -> None:
+        super().__init__(
+            f"The {repr(field_alias)} field in target {address} must be {expected_type}, but was "
+            f"`{repr(raw_value)}` with type `{type(raw_value).__name__}`."
+        )
+
+
+class RequiredFieldMissingException(InvalidFieldException):
+    def __init__(self, address: Address, field_alias: str) -> None:
+        super().__init__(f"The {repr(field_alias)} field in target {address} must be defined.")
+
+
+class InvalidFieldChoiceException(InvalidFieldException):
+    def __init__(
+        self,
+        address: Address,
+        field_alias: str,
+        raw_value: Optional[Any],
+        *,
+        valid_choices: Iterable[Any],
+    ) -> None:
+        super().__init__(
+            f"The {repr(field_alias)} field in target {address} must be one of "
+            f"{sorted(valid_choices)}, but was {repr(raw_value)}."
+        )
+
+
+class UnrecognizedTargetTypeException(Exception):
+    def __init__(
+        self,
+        target_type: str,
+        registered_target_types: RegisteredTargetTypes,
+        address: Address | None = None,
+    ) -> None:
+        for_address = f" for address {address}" if address else ""
+        super().__init__(
+            f"Target type {repr(target_type)} is not registered{for_address}.\n\nAll valid target "
+            f"types: {sorted(registered_target_types.aliases)}\n\n(If {repr(target_type)} is a "
+            "custom target type, refer to "
+            "https://groups.google.com/forum/#!topic/pants-devel/WsRFODRLVZI for instructions on "
+            "writing a light-weight Target API binding.)"
+        )
+
+
+# -----------------------------------------------------------------------------------------------
+# Field templates
+# -----------------------------------------------------------------------------------------------
+
+T = TypeVar("T")
+
+
+class ScalarField(Generic[T], Field):
+    """A field with a scalar value (vs. a compound value like a sequence or dict).
+
+    Subclasses must define the class properties `expected_type` and `expected_type_description`.
+    They should also override the type hints for the classmethod `compute_value` so that we use the
+    correct type annotation in generated documentation.
+
+        class Example(ScalarField):
+            alias = "example"
+            expected_type = MyPluginObject
+            expected_type_description = "a `my_plugin` object"
+
+            @classmethod
+            def compute_value(
+                cls, raw_value: Optional[MyPluginObject], *, address: Address
+            ) -> Optional[MyPluginObject]:
+                return super().compute_value(raw_value, address=address)
+    """
+
+    expected_type: ClassVar[Type[T]]
+    expected_type_description: ClassVar[str]
+    value: Optional[T]
+    default: ClassVar[Optional[T]] = None
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[Any], address: Address) -> Optional[T]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is not None and not isinstance(value_or_default, cls.expected_type):
+            raise InvalidFieldTypeException(
+                address,
+                cls.alias,
+                raw_value,
+                expected_type=cls.expected_type_description,
+            )
+        return value_or_default
+
+
+class BoolField(Field):
+    """A field whose value is a boolean.
+
+    Subclasses must either set `default: bool` or `required = True` so that the value is always
+    defined.
+    """
+
+    value: bool
+    default: ClassVar[bool]
+
+    @classmethod
+    def compute_value(cls, raw_value: bool, address: Address) -> bool:  # type: ignore[override]
+        value_or_default = super().compute_value(raw_value, address)
+        if not isinstance(value_or_default, bool):
+            raise InvalidFieldTypeException(
+                address, cls.alias, raw_value, expected_type="a boolean"
+            )
+        return value_or_default
+
+
+class TriBoolField(ScalarField[bool]):
+    """A field whose value is a boolean or None, which is meant to represent a tri-state."""
+
+    expected_type = bool
+    expected_type_description = "a boolean or None"
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[bool], address: Address) -> Optional[bool]:
+        return super().compute_value(raw_value, address)
+
+
+class ValidNumbers(Enum):
+    """What range of numbers are allowed for IntField and FloatField."""
+
+    positive_only = enum.auto()
+    positive_and_zero = enum.auto()
+    all = enum.auto()
+
+    def validate(self, num: float | int | None, alias: str, address: Address) -> None:
+        if num is None or self == self.all:  # type: ignore[comparison-overlap]
+            return
+        if self == self.positive_and_zero:  # type: ignore[comparison-overlap]
+            if num < 0:
+                raise InvalidFieldException(
+                    f"The {repr(alias)} field in target {address} must be greater than or equal to "
+                    f"zero, but was set to `{num}`."
+                )
+            return
+        if num <= 0:
+            raise InvalidFieldException(
+                f"The {repr(alias)} field in target {address} must be greater than zero, but was "
+                f"set to `{num}`."
+            )
+
+
+class IntField(ScalarField[int]):
+    expected_type = int
+    expected_type_description = "an integer"
+    valid_numbers: ClassVar[ValidNumbers] = ValidNumbers.all
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[int], address: Address) -> Optional[int]:
+        value_or_default = super().compute_value(raw_value, address)
+        cls.valid_numbers.validate(value_or_default, cls.alias, address)
+        return value_or_default
+
+
+class FloatField(ScalarField[float]):
+    expected_type = float
+    expected_type_description = "a float"
+    valid_numbers: ClassVar[ValidNumbers] = ValidNumbers.all
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[float], address: Address) -> Optional[float]:
+        value_or_default = super().compute_value(raw_value, address)
+        cls.valid_numbers.validate(value_or_default, cls.alias, address)
+        return value_or_default
+
+
+class StringField(ScalarField[str]):
+    """A field whose value is a string.
+
+    If you expect the string to only be one of several values, set the class property
+    `valid_choices`.
+    """
+
+    expected_type = str
+    expected_type_description = "a string"
+    valid_choices: ClassVar[Optional[Union[Type[Enum], Tuple[str, ...]]]] = None
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[str], address: Address) -> Optional[str]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is not None and cls.valid_choices is not None:
+            valid_choices = set(
+                cls.valid_choices
+                if isinstance(cls.valid_choices, tuple)
+                else (choice.value for choice in cls.valid_choices)
+            )
+            if value_or_default not in valid_choices:
+                raise InvalidFieldChoiceException(
+                    address, cls.alias, value_or_default, valid_choices=valid_choices
+                )
+        return value_or_default
+
+
+class SequenceField(Generic[T], Field):
+    """A field whose value is a homogeneous sequence.
+
+    Subclasses must define the class properties `expected_element_type` and
+    `expected_type_description`. They should also override the type hints for the classmethod
+    `compute_value` so that we use the correct type annotation in generated documentation.
+
+        class Example(SequenceField):
+            alias = "example"
+            expected_element_type = MyPluginObject
+            expected_type_description = "an iterable of `my_plugin` objects"
+
+            @classmethod
+            def compute_value(
+                cls, raw_value: Optional[Iterable[MyPluginObject]], *, address: Address
+            ) -> Optional[Tuple[MyPluginObject, ...]]:
+                return super().compute_value(raw_value, address=address)
+    """
+
+    expected_element_type: ClassVar[Type[T]]
+    expected_type_description: ClassVar[str]
+    value: Optional[Tuple[T, ...]]
+    default: ClassVar[Optional[Tuple[T, ...]]] = None
+
+    @classmethod
+    def compute_value(
+        cls, raw_value: Optional[Iterable[Any]], address: Address
+    ) -> Optional[Tuple[T, ...]]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is None:
+            return None
+        try:
+            ensure_list(value_or_default, expected_type=cls.expected_element_type)
+        except ValueError:
+            raise InvalidFieldTypeException(
+                address,
+                cls.alias,
+                raw_value,
+                expected_type=cls.expected_type_description,
+            )
+        return tuple(value_or_default)
+
+
+class StringSequenceField(SequenceField[str]):
+    expected_element_type = str
+    expected_type_description = "an iterable of strings (e.g. a list of strings)"
+
+    @classmethod
+    def compute_value(
+        cls, raw_value: Optional[Iterable[str]], address: Address
+    ) -> Optional[Tuple[str, ...]]:
+        return super().compute_value(raw_value, address)
+
+
+class DictStringToStringField(Field):
+    value: Optional[FrozenDict[str, str]]
+    default: ClassVar[Optional[FrozenDict[str, str]]] = None
+
+    @classmethod
+    def compute_value(
+        cls, raw_value: Optional[Dict[str, str]], address: Address
+    ) -> Optional[FrozenDict[str, str]]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is None:
+            return None
+        invalid_type_exception = InvalidFieldTypeException(
+            address, cls.alias, raw_value, expected_type="a dictionary of string -> string"
+        )
+        if not isinstance(value_or_default, collections.abc.Mapping):
+            raise invalid_type_exception
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in value_or_default.items()):
+            raise invalid_type_exception
+        return FrozenDict(value_or_default)
+
+
+class NestedDictStringToStringField(Field):
+    value: Optional[FrozenDict[str, FrozenDict[str, str]]]
+    default: ClassVar[Optional[FrozenDict[str, FrozenDict[str, str]]]] = None
+
+    @classmethod
+    def compute_value(
+        cls, raw_value: Optional[Dict[str, Dict[str, str]]], address: Address
+    ) -> Optional[FrozenDict[str, FrozenDict[str, str]]]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is None:
+            return None
+        invalid_type_exception = InvalidFieldTypeException(
+            address,
+            cls.alias,
+            raw_value,
+            expected_type="dict[str, dict[str, str]]",
+        )
+        if not isinstance(value_or_default, collections.abc.Mapping):
+            raise invalid_type_exception
+        for key, nested_value in value_or_default.items():
+            if not isinstance(key, str) or not isinstance(nested_value, collections.abc.Mapping):
+                raise invalid_type_exception
+            if not all(isinstance(k, str) and isinstance(v, str) for k, v in nested_value.items()):
+                raise invalid_type_exception
+        return FrozenDict(
+            {key: FrozenDict(nested_value) for key, nested_value in value_or_default.items()}
+        )
+
+
+class DictStringToStringSequenceField(Field):
+    value: Optional[FrozenDict[str, Tuple[str, ...]]]
+    default: ClassVar[Optional[FrozenDict[str, Tuple[str, ...]]]] = None
+
+    @classmethod
+    def compute_value(
+        cls, raw_value: Optional[Dict[str, Iterable[str]]], address: Address
+    ) -> Optional[FrozenDict[str, Tuple[str, ...]]]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is None:
+            return None
+        invalid_type_exception = InvalidFieldTypeException(
+            address,
+            cls.alias,
+            raw_value,
+            expected_type="a dictionary of string -> an iterable of strings",
+        )
+        if not isinstance(value_or_default, collections.abc.Mapping):
+            raise invalid_type_exception
+        result = {}
+        for k, v in value_or_default.items():
+            if not isinstance(k, str):
+                raise invalid_type_exception
+            try:
+                result[k] = tuple(ensure_str_list(v))
+            except ValueError:
+                raise invalid_type_exception
+        return FrozenDict(result)
+
+
+# -----------------------------------------------------------------------------------------------
+# Sources and codegen
+# -----------------------------------------------------------------------------------------------
+
+
+class SourcesField(AsyncFieldMixin, Field):
+    """A field for the sources that a target owns.
+
+    When defining a new sources field, you should subclass `MultipleSourcesField` or
+    `SingleSourceField`, which set up the field's `alias` and data type / parsing. However, you
+    should use `tgt.get(SourcesField)` when you need to operate on all sources types, such as
+    with `HydrateSourcesRequest`, so that both subclasses work.
+
+    Subclasses may set the following class properties:
+
+    - `expected_file_extensions` -- A tuple of strings containing the expected file extensions for
+        source files. The default is no expected file extensions.
+    - `expected_num_files` -- An integer or range stating the expected total number of source
+        files. The default is no limit on the number of source files.
+    - `uses_source_roots` -- Whether the concept of "source root" pertains to the source files
+        referenced by this field.
+    - `default` -- A default value for this field.
+    - `default_glob_match_error_behavior` -- Advanced option, should very rarely be used. Override
+        glob match error behavior when using the default value. If setting this to
+        `GlobMatchErrorBehavior.ignore`, make sure you have other validation in place in case the
+        default glob doesn't match any files if required, to alert the user appropriately.
+    """
+
+    expected_file_extensions: ClassVar[tuple[str, ...] | None] = None
+    expected_num_files: ClassVar[int | range | None] = None
+    uses_source_roots: ClassVar[bool] = True
+
+    default: ClassVar[ImmutableValue] = None
+    default_glob_match_error_behavior: ClassVar[GlobMatchErrorBehavior | None] = None
+
+    @property
+    def globs(self) -> tuple[str, ...]:
+        """The raw globs, relative to the BUILD file."""
+
+        # NB: We give a default implementation because it's common to use
+        # `tgt.get(SourcesField)`, and that must not error. But, subclasses need to
+        # implement this for the field to be useful (they should subclass `MultipleSourcesField`
+        # and `SingleSourceField`).
+        return ()
+
+    def validate_resolved_files(self, files: Sequence[str]) -> None:
+        """Perform any additional validation on the resulting source files, e.g. ensuring that
+        certain banned files are not used.
+
+        To enforce that the resulting files end in certain extensions, such as `.py` or `.java`, set
+        the class property `expected_file_extensions`.
+
+        To enforce that there are only a certain number of resulting files, such as binary targets
+        checking for only 0-1 sources, set the class property `expected_num_files`.
+        """
+        if self.expected_file_extensions is not None:
+            bad_files = [
+                fp for fp in files if not PurePath(fp).suffix in self.expected_file_extensions
+            ]
+            if bad_files:
+                expected = (
+                    f"one of {sorted(self.expected_file_extensions)}"
+                    if len(self.expected_file_extensions) > 1
+                    else repr(self.expected_file_extensions[0])
+                )
+                raise InvalidFieldException(
+                    f"The {repr(self.alias)} field in target {self.address} can only contain "
+                    f"files that end in {expected}, but it had these files: {sorted(bad_files)}."
+                    "\n\nMaybe create a `resource`/`resources` or `file`/`files` target and "
+                    "include it in the `dependencies` field?"
+                )
+        if self.expected_num_files is not None:
+            num_files = len(files)
+            is_bad_num_files = (
+                num_files not in self.expected_num_files
+                if isinstance(self.expected_num_files, range)
+                else num_files != self.expected_num_files
+            )
+            if is_bad_num_files:
+                if isinstance(self.expected_num_files, range):
+                    if len(self.expected_num_files) == 2:
+                        expected_str = (
+                            " or ".join(str(n) for n in self.expected_num_files) + " files"
+                        )
+                    else:
+                        expected_str = f"a number of files in the range `{self.expected_num_files}`"
+                else:
+                    expected_str = pluralize(self.expected_num_files, "file")
+                raise InvalidFieldException(
+                    f"The {repr(self.alias)} field in target {self.address} must have "
+                    f"{expected_str}, but it had {pluralize(num_files, 'file')}."
+                )
+
+    @staticmethod
+    def prefix_glob_with_dirpath(dirpath: str, glob: str) -> str:
+        if glob.startswith("!"):
+            return f"!{os.path.join(dirpath, glob[1:])}"
+        return os.path.join(dirpath, glob)
+
+    @final
+    def _prefix_glob_with_address(self, glob: str) -> str:
+        return self.prefix_glob_with_dirpath(self.address.spec_path, glob)
+
+    @final
+    @classmethod
+    def can_generate(
+        cls, output_type: type[SourcesField], union_membership: UnionMembership
+    ) -> bool:
+        """Can this field be used to generate the output_type?
+
+        Generally, this method does not need to be used. Most call sites can simply use the below,
+        and the engine will generate the sources if possible or will return an instance of
+        HydratedSources with an empty snapshot if not possible:
+
+            await Get(
+                HydratedSources,
+                HydrateSourcesRequest(
+                    sources_field,
+                    for_sources_types=[FortranSources],
+                    enable_codegen=True,
+                )
+            )
+
+        This method is useful when you need to filter targets before hydrating them, such as how
+        you may filter targets via `tgt.has_field(MyField)`.
+        """
+        generate_request_types = union_membership.get(GenerateSourcesRequest)
+        return any(
+            issubclass(cls, generate_request_type.input)
+            and issubclass(generate_request_type.output, output_type)
+            for generate_request_type in generate_request_types
+        )
+
+    @final
+    def path_globs(self, files_not_found_behavior: FilesNotFoundBehavior) -> PathGlobs:
+        if not self.globs:
+            return PathGlobs([])
+
+        # SingleSourceField has str as default type.
+        default_globs = (
+            [self.default] if self.default and isinstance(self.default, str) else self.default
+        )
+
+        # Match any if we use default globs, else match all.
+        conjunction = (
+            GlobExpansionConjunction.all_match
+            if not default_globs or (set(self.globs) != set(default_globs))
+            else GlobExpansionConjunction.any_match
+        )
+        # Use fields default error behavior if defined, if we use default globs else the provided
+        # error behavior.
+        error_behavior = (
+            files_not_found_behavior.to_glob_match_error_behavior()
+            if conjunction == GlobExpansionConjunction.all_match
+            or self.default_glob_match_error_behavior is None
+            else self.default_glob_match_error_behavior
+        )
+        return PathGlobs(
+            (self._prefix_glob_with_address(glob) for glob in self.globs),
+            conjunction=conjunction,
+            glob_match_error_behavior=error_behavior,
+            description_of_origin=(
+                f"{self.address}'s `{self.alias}` field"
+                if error_behavior != GlobMatchErrorBehavior.ignore
+                else None
+            ),
+        )
+
+    @property
+    def filespec(self) -> Filespec:
+        """The original globs, returned in the Filespec dict format.
+
+        The globs will be relativized to the build root.
+        """
+        includes = []
+        excludes = []
+        for glob in self.globs:
+            if glob.startswith("!"):
+                excludes.append(os.path.join(self.address.spec_path, glob[1:]))
+            else:
+                includes.append(os.path.join(self.address.spec_path, glob))
+        result: Filespec = {"includes": includes}
+        if excludes:
+            result["excludes"] = excludes
+        return result
+
+
+class MultipleSourcesField(SourcesField, StringSequenceField):
+    """The `sources: list[str]` field.
+
+    See the docstring for `SourcesField` for some class properties you can set, such as
+    `expected_file_extensions`.
+
+    When you need to get the sources for all targets, use `tgt.get(SourcesField)` rather than
+    `tgt.get(MultipleSourcesField)`.
+    """
+
+    alias = "sources"
+    help = (
+        "A list of files and globs that belong to this target.\n\n"
+        "Paths are relative to the BUILD file's directory. You can ignore files/globs by "
+        "prefixing them with `!`.\n\n"
+        "Example: `sources=['example.ext', 'test_*.ext', '!test_ignore.ext']`."
+    )
+
+    @property
+    def globs(self) -> tuple[str, ...]:
+        return self.value or ()
+
+
+class OptionalSingleSourceField(SourcesField, StringField):
+    """The `source: str` field.
+
+    See the docstring for `SourcesField` for some class properties you can set, such as
+    `expected_file_extensions`.
+
+    When you need to get the sources for all targets, use `tgt.get(SourcesField)` rather than
+    `tgt.get(OptionalSingleSourceField)`.
+
+    Use `SingleSourceField` if the source must exist.
+    """
+
+    alias = "source"
+    help = (
+        "A single file that belongs to this target.\n\n"
+        "Path is relative to the BUILD file's directory, e.g. `source='example.ext'`."
+    )
+    required = False
+    default: ClassVar[str | None] = None
+    expected_num_files: ClassVar[int | range] = range(0, 2)
+
+    @classmethod
+    def compute_value(cls, raw_value: Optional[str], address: Address) -> Optional[str]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is None:
+            return None
+        if "*" in value_or_default:
+            raise InvalidFieldException(
+                f"The {repr(cls.alias)} field in target {address} should not include `*` globs, "
+                f"but was set to {value_or_default}. Instead, use a literal file path (relative "
+                "to the BUILD file)."
+            )
+        if value_or_default.startswith("!"):
+            raise InvalidFieldException(
+                f"The {repr(cls.alias)} field in target {address} should not start with `!`, which "
+                f"is usually used in the `sources` field to exclude certain files. Instead, use a "
+                "literal file path (relative to the BUILD file)."
+            )
+        return value_or_default
+
+    @property
+    def file_path(self) -> str | None:
+        """The path to the file, relative to the build root.
+
+        This works without hydration because we validate that `*` globs and `!` ignores are not
+        used. However, consider still hydrating so that you verify the source file actually exists.
+
+        The return type is optional because it's possible to have 0-1 files.
+        """
+        if self.value is None:
+            return None
+        return os.path.join(self.address.spec_path, self.value)
+
+    @property
+    def globs(self) -> tuple[str, ...]:
+        if self.value is None:
+            return ()
+        return (self.value,)
+
+
+class SingleSourceField(OptionalSingleSourceField):
+    """The `source: str` field.
+
+    Unlike `OptionalSingleSourceField`, the `.value` must be defined, whether by setting the
+    `default` or making the field `required`.
+
+    See the docstring for `SourcesField` for some class properties you can set, such as
+    `expected_file_extensions`.
+
+    When you need to get the sources for all targets, use `tgt.get(SourcesField)` rather than
+    `tgt.get(SingleSourceField)`.
+    """
+
+    required = True
+    expected_num_files = 1
+    value: str
+
+    @property
+    def file_path(self) -> str:
+        result = super().file_path
+        assert result is not None
+        return result
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class HydrateSourcesRequest(EngineAwareParameter):
+    field: SourcesField
+    for_sources_types: tuple[type[SourcesField], ...]
+    enable_codegen: bool
+
+    def __init__(
+        self,
+        field: SourcesField,
+        *,
+        for_sources_types: Iterable[type[SourcesField]] = (SourcesField,),
+        enable_codegen: bool = False,
+    ) -> None:
+        """Convert raw sources globs into an instance of HydratedSources.
+
+        If you only want to handle certain SourcesFields, such as only PythonSources, set
+        `for_sources_types`. Any invalid sources will return a `HydratedSources` instance with an
+        empty snapshot and `sources_type = None`.
+
+        If `enable_codegen` is set to `True`, any codegen sources will try to be converted to one
+        of the `for_sources_types`.
+        """
+        self.field = field
+        self.for_sources_types = tuple(for_sources_types)
+        self.enable_codegen = enable_codegen
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        if self.enable_codegen and self.for_sources_types == (SourcesField,):
+            raise ValueError(
+                "When setting `enable_codegen=True` on `HydrateSourcesRequest`, you must also "
+                "explicitly set `for_source_types`. Why? `for_source_types` is used to "
+                "determine which language(s) to try to generate. For example, "
+                "`for_source_types=(PythonSources,)` will hydrate `PythonSources` like normal, "
+                "and, if it encounters codegen sources that can be converted into Python, it will "
+                "generate Python files."
+            )
+
+    def debug_hint(self) -> str:
+        return self.field.address.spec
+
+
+@dataclass(frozen=True)
+class HydratedSources:
+    """The result of hydrating a SourcesField.
+
+    The `sources_type` will indicate which of the `HydrateSourcesRequest.for_sources_type` the
+    result corresponds to, e.g. if the result comes from `FilesSources` vs. `PythonSources`. If this
+    value is None, then the input `SourcesField` was not one of the expected types; or, when codegen
+    was enabled in the request, there was no valid code generator to generate the requested language
+    from the original input. This property allows for switching on the result, e.g. handling
+    hydrated files() sources differently than hydrated Python sources.
+    """
+
+    snapshot: Snapshot
+    filespec: Filespec
+    sources_type: type[SourcesField] | None
+
+
+@union
+@dataclass(frozen=True)
+class GenerateSourcesRequest:
+    """A request to go from protocol sources -> a particular language.
+
+    This should be subclassed for each distinct codegen implementation. The subclasses must define
+    the class properties `input` and `output`. The subclass must also be registered via
+    `UnionRule(GenerateSourcesRequest, GenerateFortranFromAvroRequest)`, for example.
+
+    The rule to actually implement the codegen should take the subclass as input, and it must
+    return `GeneratedSources`.
+
+    The `exportable` attribute disables the use of this codegen by the `export-codegen` goal when
+    set to False.
+
+    For example:
+
+        class GenerateFortranFromAvroRequest:
+            input = AvroSources
+            output = FortranSources
+
+        @rule
+        def generate_fortran_from_avro(request: GenerateFortranFromAvroRequest) -> GeneratedSources:
+            ...
+
+        def rules():
+            return [
+                generate_fortran_from_avro,
+                UnionRule(GenerateSourcesRequest, GenerateFortranFromAvroRequest),
+            ]
+    """
+
+    protocol_sources: Snapshot
+    protocol_target: Target
+
+    input: ClassVar[type[SourcesField]]
+    output: ClassVar[type[SourcesField]]
+
+    exportable: ClassVar[bool] = True
+
+
+@dataclass(frozen=True)
+class GeneratedSources:
+    snapshot: Snapshot
+
+
+class SourcesPaths(Paths):
+    """The resolved file names of the `source`/`sources` field.
+
+    This does not consider codegen, and only captures the files from the field.
+    """
+
+
+@dataclass(frozen=True)
+class SourcesPathsRequest(EngineAwareParameter):
+    """A request to resolve the file names of the `source`/`sources` field.
+
+    Use via `Get(SourcesPaths, SourcesPathRequest(tgt.get(SourcesField))`.
+
+    This is faster than `Get(HydratedSources, HydrateSourcesRequest)` because it does not snapshot
+    the files and it only resolves the file names.
+
+    This does not consider codegen, and only captures the files from the field. Use
+    `HydrateSourcesRequest` to use codegen.
+    """
+
+    field: SourcesField
+
+    def debug_hint(self) -> str:
+        return self.field.address.spec
+
+
+class SecondaryOwnerMixin(ABC):
+    """Add to a Field for the target to work with file arguments and `--changed-since`, without it
+    needing a `SourcesField`.
+
+    Why use this? In a dependency inference world, multiple targets including the same file in the
+    `sources` field causes issues due to ambiguity over which target to use. So, only one target
+    should have "primary ownership" of the file. However, you may still want other targets to be
+    used when that file is included in file arguments. For example, a `python_source` target
+    being the primary owner of the `.py` file, but a `pex_binary` still working with file
+    arguments for that file. Secondary ownership means that the target won't be used for things like
+    dependency inference and hydrating sources, but file arguments will still work.
+
+    There should be a primary owner of the file(s), e.g. the `python_source` in the above example.
+    Typically, you will want to add a dependency injection rule to infer a dep on that primary
+    owner.
+
+    All associated files must live in the BUILD target's directory or a subdirectory to work
+    properly, like the `sources` field.
+    """
+
+    @property
+    @abstractmethod
+    def filespec(self) -> Filespec:
+        """A dictionary in the form {'globs': ['full/path/to/f.ext']} representing the field's
+        associated files.
+
+        Typically, users should use a file name/glob relative to the BUILD file, like the `sources`
+        field. Then, you can use `os.path.join(self.address.spec_path, self.value)` to relative to
+        the build root.
+        """
+
+
+def targets_with_sources_types(
+    sources_types: Iterable[type[SourcesField]],
+    targets: Iterable[Target],
+    union_membership: UnionMembership,
+) -> tuple[Target, ...]:
+    """Return all targets either with the specified sources subclass(es) or which can generate those
+    sources."""
+    return tuple(
+        tgt
+        for tgt in targets
+        if any(
+            tgt.has_field(sources_type)
+            or tgt.get(SourcesField).can_generate(sources_type, union_membership)
+            for sources_type in sources_types
+        )
+    )
+
+
+# -----------------------------------------------------------------------------------------------
+# `Dependencies` field
+# -----------------------------------------------------------------------------------------------
+
+
+class Dependencies(StringSequenceField, AsyncFieldMixin):
+    """The dependencies field.
+
+    To resolve all dependencies—including the results of dependency injection and inference—use
+    either `await Get(Addresses, DependenciesRequest(tgt[Dependencies])` or `await Get(Targets,
+    DependenciesRequest(tgt[Dependencies])`.
+    """
+
+    alias = "dependencies"
+    help = (
+        "Addresses to other targets that this target depends on, e.g. ['helloworld/subdir:lib']."
+        "\n\nAlternatively, you may include file names. Pants will find which target owns that "
+        "file, and create a new target from that which only includes the file in its `sources` "
+        "field. For files relative to the current BUILD file, prefix with `./`; otherwise, put the "
+        "full path, e.g. ['./sibling.txt', 'resources/demo.json'].\n\nYou may exclude dependencies "
+        "by prefixing with `!`, e.g. `['!helloworld/subdir:lib', '!./sibling.txt']`. Ignores are "
+        "intended for false positives with dependency inference; otherwise, simply leave off the "
+        "dependency from the BUILD file."
+    )
+    supports_transitive_excludes = False
+
+    @memoized_property
+    def unevaluated_transitive_excludes(self) -> UnparsedAddressInputs:
+        if not self.supports_transitive_excludes or not self.value:
+            return UnparsedAddressInputs((), owning_address=self.address)
+        return UnparsedAddressInputs(
+            (v[2:] for v in self.value if v.startswith("!!")),
+            owning_address=self.address,
+        )
+
+
+@dataclass(frozen=True)
+class DependenciesRequest(EngineAwareParameter):
+    field: Dependencies
+    include_special_cased_deps: bool = False
+
+    def debug_hint(self) -> str:
+        return self.field.address.spec
+
+
+@dataclass(frozen=True)
+class ExplicitlyProvidedDependencies:
+    """The literal addresses from a BUILD file `dependencies` field.
+
+    Almost always, you should use `await Get(Addresses, DependenciesRequest)` instead, which will
+    consider dependency injection and inference and apply ignores. However, this type can be
+    useful particularly within inference/injection rules to see if a user already explicitly
+    provided a dependency.
+
+    Resolve using `await Get(ExplicitlyProvidedDependencies, DependenciesRequest)`.
+
+    Note that the `includes` are not filtered based on the `ignores`: this type preserves exactly
+    what was in the BUILD file.
+    """
+
+    address: Address
+    includes: FrozenOrderedSet[Address]
+    ignores: FrozenOrderedSet[Address]
+
+    @memoized_method
+    def any_are_covered_by_includes(self, addresses: Iterable[Address]) -> bool:
+        """Return True if every address is in the explicitly provided includes.
+
+        Note that if the input addresses are generated targets, they will still be marked as covered
+        if their original target generator is in the explicitly provided includes.
+        """
+        return any(
+            addr in self.includes or addr.maybe_convert_to_target_generator() in self.includes
+            for addr in addresses
+        )
+
+    @memoized_method
+    def remaining_after_disambiguation(
+        self, addresses: Iterable[Address], owners_must_be_ancestors: bool
+    ) -> frozenset[Address]:
+        """All addresses that remain after ineligible candidates are discarded.
+
+        Candidates are removed if they appear as ignores (`!` and `!!)` in the `dependencies`
+        field. Note that if the input addresses are generated targets, they will still be marked as
+        covered if their original target generator is in the explicitly provided ignores.
+
+        Candidates are also removed if `owners_must_be_ancestors` is True and the targets are not
+        ancestors, e.g. `root2:tgt` is not a valid candidate for something defined in `root1`.
+        """
+        original_addr_path = PurePath(self.address.spec_path)
+
+        def is_valid(addr: Address) -> bool:
+            is_ignored = (
+                addr in self.ignores or addr.maybe_convert_to_target_generator() in self.ignores
+            )
+            if owners_must_be_ancestors is False:
+                return not is_ignored
+            # NB: `PurePath.is_relative_to()` was not added until Python 3.9. This emulates it.
+            try:
+                original_addr_path.relative_to(addr.spec_path)
+                return not is_ignored
+            except ValueError:
+                return False
+
+        return frozenset(filter(is_valid, addresses))
+
+    def maybe_warn_of_ambiguous_dependency_inference(
+        self,
+        ambiguous_addresses: Iterable[Address],
+        original_address: Address,
+        *,
+        context: str,
+        import_reference: str,
+        owners_must_be_ancestors: bool = False,
+    ) -> None:
+        """If the module is ambiguous and the user did not disambiguate, warn that dependency
+        inference will not be used.
+
+        Disambiguation usually happens by using ignores in the `dependencies` field with `!` and
+        `!!`. If `owners_must_be_ancestors` is True, any addresses which are not ancestors of the
+        target in question will also be ignored.
+        """
+        if not ambiguous_addresses or self.any_are_covered_by_includes(ambiguous_addresses):
+            return
+        remaining = self.remaining_after_disambiguation(
+            ambiguous_addresses, owners_must_be_ancestors=owners_must_be_ancestors
+        )
+        if len(remaining) <= 1:
+            return
+        logger.warning(
+            f"{context}, but Pants cannot safely infer a dependency because more than one target "
+            f"owns this {import_reference}, so it is ambiguous which to use: "
+            f"{sorted(addr.spec for addr in remaining)}."
+            f"\n\nPlease explicitly include the dependency you want in the `dependencies` "
+            f"field of {original_address}, or ignore the ones you do not want by prefixing "
+            f"with `!` or `!!` so that one or no targets are left."
+            f"\n\nAlternatively, you can remove the ambiguity by deleting/changing some of the "
+            f"targets so that only 1 target owns this {import_reference}. Refer to "
+            f"{doc_url('troubleshooting#import-errors-and-missing-dependencies')}."
+        )
+
+    def disambiguated(
+        self, ambiguous_addresses: Iterable[Address], owners_must_be_ancestors: bool = False
+    ) -> Address | None:
+        """If exactly one of the input addresses remains after disambiguation, return it.
+
+        Disambiguation usually happens by using ignores in the `dependencies` field with `!` and
+        `!!`. If `owners_must_be_ancestors` is True, any addresses which are not ancestors of the
+        target in question will also be ignored.
+        """
+        if not ambiguous_addresses or self.any_are_covered_by_includes(ambiguous_addresses):
+            return None
+        remaining_after_ignores = self.remaining_after_disambiguation(
+            ambiguous_addresses, owners_must_be_ancestors=owners_must_be_ancestors
+        )
+        return list(remaining_after_ignores)[0] if len(remaining_after_ignores) == 1 else None
+
+
+@union
+@dataclass(frozen=True)
+class InjectDependenciesRequest(EngineAwareParameter, ABC):
+    """A request to inject dependencies, in addition to those explicitly provided.
+
+    To set up a new injection, subclass this class. Set the class property `inject_for` to the
+    type of `Dependencies` field you want to inject for, such as `FortranDependencies`. This will
+    cause the class, and any subclass, to have the injection. Register this subclass with
+    `UnionRule(InjectDependenciesRequest, InjectFortranDependencies)`, for example.
+
+    Then, create a rule that takes the subclass as a parameter and returns `InjectedDependencies`.
+
+    For example:
+
+        class FortranDependencies(Dependencies):
+            pass
+
+        class InjectFortranDependencies(InjectDependenciesRequest):
+            inject_for = FortranDependencies
+
+        @rule
+        async def inject_fortran_dependencies(
+            request: InjectFortranDependencies
+        ) -> InjectedDependencies:
+            addresses = await Get(
+                Addresses, UnparsedAddressInputs(["//:injected"], owning_address=None)
+            )
+            return InjectedDependencies(addresses)
+
+        def rules():
+            return [
+                *collect_rules(),
+                UnionRule(InjectDependenciesRequest, InjectFortranDependencies),
+            ]
+    """
+
+    dependencies_field: Dependencies
+    inject_for: ClassVar[Type[Dependencies]]
+
+    def debug_hint(self) -> str:
+        return self.dependencies_field.address.spec
+
+
+class InjectedDependencies(DeduplicatedCollection[Address]):
+    sort_input = True
+
+
+SF = TypeVar("SF", bound="SourcesField")
+
+
+@union
+@dataclass(frozen=True)
+class InferDependenciesRequest(Generic[SF], EngineAwareParameter):
+    """A request to infer dependencies by analyzing source files.
+
+    To set up a new inference implementation, subclass this class. Set the class property
+    `infer_from` to the type of `SourcesField` you are able to infer from, such as
+    `FortranSources`. This will cause the class, and any subclass, to use your inference
+    implementation. Note that there cannot be more than one implementation for a particular
+    `SourcesField` class. Register this subclass with
+    `UnionRule(InferDependenciesRequest, InferFortranDependencies)`, for example.
+
+    Then, create a rule that takes the subclass as a parameter and returns `InferredDependencies`.
+
+    For example:
+
+        class InferFortranDependencies(InferDependenciesRequest):
+            from_sources = FortranSources
+
+        @rule
+        def infer_fortran_dependencies(request: InferFortranDependencies) -> InferredDependencies:
+            hydrated_sources = await Get(HydratedSources, HydrateSources(request.sources_field))
+            ...
+            return InferredDependencies(...)
+
+        def rules():
+            return [
+                infer_fortran_dependencies,
+                UnionRule(InferDependenciesRequest, InferFortranDependencies),
+            ]
+    """
+
+    sources_field: SF
+    infer_from: ClassVar[Type[SF]]
+
+    def debug_hint(self) -> str:
+        return self.sources_field.address.spec
+
+
+@frozen_after_init
+@dataclass(unsafe_hash=True)
+class InferredDependencies:
+    dependencies: FrozenOrderedSet[Address]
+
+    def __init__(self, dependencies: Iterable[Address]) -> None:
+        """The result of inferring dependencies."""
+        self.dependencies = FrozenOrderedSet(sorted(dependencies))
+
+    def __bool__(self) -> bool:
+        return bool(self.dependencies)
+
+    def __iter__(self) -> Iterator[Address]:
+        return iter(self.dependencies)
+
+
+class SpecialCasedDependencies(StringSequenceField, AsyncFieldMixin):
+    """Subclass this for fields that act similarly to the `dependencies` field, but are handled
+    differently than normal dependencies.
+
+    For example, you might have a field for package/binary dependencies, which you will call
+    the equivalent of `./pants package` on. While you could put these in the normal
+    `dependencies` field, it is often clearer to the user to call out this magic through a
+    dedicated field.
+
+    This type will ensure that the dependencies show up in project introspection,
+    like `dependencies` and `dependees`, but not show up when you call `Get(TransitiveTargets,
+    TransitiveTargetsRequest)` and `Get(Addresses, DependenciesRequest)`.
+
+    To hydrate this field's dependencies, use `await Get(Addresses, UnparsedAddressInputs,
+    tgt.get(MyField).to_unparsed_address_inputs()`.
+    """
+
+    def to_unparsed_address_inputs(self) -> UnparsedAddressInputs:
+        return UnparsedAddressInputs(self.value or (), owning_address=self.address)
+
+
+# -----------------------------------------------------------------------------------------------
+# Other common Fields used across most targets
+# -----------------------------------------------------------------------------------------------
+
+
+class Tags(StringSequenceField):
+    alias = "tags"
+    help = (
+        "Arbitrary strings to describe a target.\n\nFor example, you may tag some test targets "
+        "with 'integration_test' so that you could run `./pants --tag='integration_test' test ::` "
+        "to only run on targets with that tag."
+    )
+
+
+class DescriptionField(StringField):
+    alias = "description"
+    help = (
+        "A human-readable description of the target.\n\nUse `./pants list --documented ::` to see "
+        "all targets with descriptions."
+    )
+
+
+COMMON_TARGET_FIELDS = (Tags, DescriptionField)
+
+
+class OverridesField(AsyncFieldMixin, Field):
+    """A mapping of keys (e.g. target names, source globs) to field names with their overridden
+    values.
+
+    This is meant for target generators to reduce boilerplate. It's up to the corresponding target
+    generator rule to determine how to implement the field, such as how users specify the key. For
+    example, `{"f.ext": {"tags": ['my_tag']}}`.
+    """
+
+    alias = "overrides"
+    value: dict[tuple[str, ...], dict[str, Any]] | None
+    default: ClassVar[None] = None  # A default does not make sense for this field.
+
+    @classmethod
+    def compute_value(
+        cls,
+        raw_value: Optional[Dict[Union[str, Tuple[str, ...]], Dict[str, Any]]],
+        address: Address,
+    ) -> Optional[Dict[Tuple[str, ...], Dict[str, Any]]]:
+        value_or_default = super().compute_value(raw_value, address)
+        if value_or_default is None:
+            return None
+        invalid_type_exception = InvalidFieldTypeException(
+            address,
+            cls.alias,
+            raw_value,
+            expected_type="dict[str | tuple[str, ...], dict[str, Any]]",
+        )
+        if not isinstance(value_or_default, collections.abc.Mapping):
+            raise invalid_type_exception
+
+        result: dict[tuple[str, ...], dict[str, Any]] = {}
+        for outer_key, nested_value in value_or_default.items():
+            if isinstance(outer_key, str):
+                outer_key = (outer_key,)
+            if not isinstance(outer_key, collections.abc.Sequence) or not all(
+                isinstance(elem, str) for elem in outer_key
+            ):
+                raise invalid_type_exception
+            if not isinstance(nested_value, collections.abc.Mapping):
+                raise invalid_type_exception
+            if not all(isinstance(inner_key, str) for inner_key in nested_value):
+                raise invalid_type_exception
+            result[tuple(outer_key)] = dict(nested_value)
+
+        return result
+
+    def __hash__(self) -> int:
+        # The value might have unhashable elements like `list`, so we stringify it.
+        return hash((self.__class__, repr(self.value)))
+
+    def _relativize_globs(self, globs: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(
+            f"!{os.path.join(self.address.spec_path, glob[1:])}"
+            if glob.startswith("!")
+            else os.path.join(self.address.spec_path, glob)
+            for glob in globs
+        )
+
+    def to_path_globs(
+        self, files_not_found_behavior: FilesNotFoundBehavior
+    ) -> tuple[PathGlobs, ...]:
+        """Create a `PathGlobs` for each key.
+
+        This should only be used if the keys are file globs.
+        """
+        if not self.value:
+            return ()
+        return tuple(
+            PathGlobs(
+                self._relativize_globs(globs),
+                glob_match_error_behavior=files_not_found_behavior.to_glob_match_error_behavior(),
+                description_of_origin=f"the `overrides` field for {self.address}",
+            )
+            for globs in self.value
+        )
+
+    def flatten(self) -> dict[str, dict[str, Any]]:
+        """Combine all overrides for every key into a single dictionary."""
+        result: dict[str, dict[str, Any]] = {}
+        for keys, override in (self.value or {}).items():
+            for key in keys:
+                for field, value in override.items():
+                    if key not in result:
+                        result[key] = {field: value}
+                        continue
+                    if field not in result[key]:
+                        result[key][field] = value
+                        continue
+                    raise InvalidFieldException(
+                        f"Conflicting overrides in the `{self.alias}` field of "
+                        f"`{self.address}` for the key `{key}` for "
+                        f"the field `{field}`. You cannot specify the same field name "
+                        "multiple times for the same key.\n\n"
+                        f"(One override sets the field to `{repr(result[key][field])}` "
+                        f"but another sets to `{repr(value)}`.)"
+                    )
+        return result
+
+    def flatten_paths(
+        self, paths_to_overrides: Mapping[Paths, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Combine all overrides for each file into a single dictionary."""
+        result: dict[str, dict[str, Any]] = {}
+        for paths, override in paths_to_overrides.items():
+            for path in paths.files:
+                for field, value in override.items():
+                    if path not in result:
+                        result[path] = {field: value}
+                        continue
+                    if field not in result[path]:
+                        result[path][field] = value
+                        continue
+                    relpath = fast_relpath(path, self.address.spec_path)
+                    raise InvalidFieldException(
+                        f"Conflicting overrides in the `{self.alias}` field of "
+                        f"`{self.address}` for the relative path `{relpath}` for "
+                        f"the field `{field}`. You cannot specify the same field name "
+                        "multiple times for the same path.\n\n"
+                        f"(One override sets the field to `{repr(result[path][field])}` "
+                        f"but another sets to `{repr(value)}`.)"
+                    )
+        return result
+
+
+def generate_file_based_overrides_field_help_message(
+    generated_target_name: str, example: str
+) -> str:
+    return (
+        f"Override the field values for generated `{generated_target_name}` targets.\n\n"
+        "Expects a dictionary of relative file paths and globs to a dictionary for the "
+        "overrides. You may either use a string for a single path / glob, "
+        "or a string tuple for multiple paths / globs. Each override is a dictionary of "
+        "field names to the overridden value.\n\n"
+        f"For example:\n\n```\n{example}\n```\n\n"
+        "File paths and globs are relative to the BUILD file's directory. Every overridden file is "
+        "validated to belong to this target's `sources` field.\n\n"
+        f"If you'd like to override a field's value for every `{generated_target_name}` target "
+        "generated by this target, change the field directly on this target rather than using the "
+        "`overrides` field.\n\n"
+        "You can specify the same file name in multiple keys, so long as you don't override the "
+        "same field more than one time for the file."
+    )
