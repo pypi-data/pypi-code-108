@@ -1,0 +1,1 @@
+from .brands_table import BrandsTable
