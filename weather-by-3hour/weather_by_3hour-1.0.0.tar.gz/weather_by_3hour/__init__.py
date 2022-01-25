@@ -1,0 +1,1 @@
+from weather_by_3h.weather_by_3hour import Weather
