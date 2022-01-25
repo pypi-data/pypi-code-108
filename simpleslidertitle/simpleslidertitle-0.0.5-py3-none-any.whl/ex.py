@@ -1,0 +1,2 @@
+import simplecomponenttwo
+simplecomponenttwo.simplecomponenttwo.sliderfunction('titletest')
