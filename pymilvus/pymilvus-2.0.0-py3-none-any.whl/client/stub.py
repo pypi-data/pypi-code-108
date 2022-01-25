@@ -1,0 +1,1047 @@
+from urllib import parse
+
+from .grpc_handler import GrpcHandler
+from .exceptions import BaseException, ParamError
+from .types import CompactionState, CompactionPlans
+from ..settings import DefaultConfig as config
+from ..decorators import deprecated
+
+from .check import (
+    is_legal_host,
+    is_legal_port,
+)
+
+
+class Milvus:
+    @deprecated
+    def __init__(self, host=None, port=config.GRPC_PORT, uri=config.GRPC_URI, channel=None, **kwargs):
+        self.uri = self.__set_uri(host, port, uri)
+        self._handler = GrpcHandler(self.uri, channel=channel)
+
+    def __set_uri(self, host=None, port=config.GRPC_PORT, uri=config.GRPC_URI):
+        if host is None and uri is None:
+            raise ParamError('Host and uri cannot both be None')
+
+        elif host is None:
+            try:
+                parsed_uri = parse.urlparse(uri, "tcp")
+            except (Exception) as e:
+                raise ParamError(f"Illegal uri [{uri}]: {e}")
+
+            host, port = parsed_uri.hostname, parsed_uri.port
+
+        host, port = str(host), str(port)
+        if not (is_legal_host(host) and is_legal_port(port)):
+            raise ParamError(f"Illegal host [{host}] or port [{port}]")
+
+        return f"{host}:{port}"
+
+    def _connection(self):
+        return self.handler
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def handler(self):
+        return self._handler
+
+    def close(self):
+        if self._handler is None:
+            raise BaseException("Closing on closed handler")
+        self.handler.close()
+        self._handler = None
+
+    #  @retry_on_rpc_failure(retry_times=10, wait=1)
+    def create_collection(self, collection_name, fields, shards_num=2, timeout=None, **kwargs):
+        """ Creates a collection.
+
+        :param collection_name: The name of the collection. A collection name can only include
+        numbers, letters, and underscores, and must not begin with a number.
+        :type  collection_name: str
+
+        :param fields: Field parameters.
+        :type  fields: dict
+
+            ` {"fields": [
+                    {"field": "A", "type": DataType.INT32}
+                    {"field": "B", "type": DataType.INT64},
+                    {"field": "C", "type": DataType.FLOAT},
+                    {"field": "Vec", "type": DataType.FLOAT_VECTOR,
+                     "params": {"dim": 128}}
+                ],
+            "auto_id": True}`
+
+        :param shards_num: How wide to scale collection. Corresponds to how many active datanodes
+                        can be used on insert.
+        :type shards_num: int
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :param kwargs:
+            * *consistency_level* (``str/int``) --
+            Which consistency level to use when searching in the collection. For details, see
+            https://github.com/milvus-io/milvus/blob/master/docs/developer_guides/how-guarantee-ts-works.md.
+            Note: this parameter can be overwritten by the same parameter specified in search.
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.create_collection(collection_name, fields, shards_num=shards_num, timeout=timeout, **kwargs)
+
+    def drop_collection(self, collection_name, timeout=None):
+        """
+        Delete a specified collection.
+
+        :param collection_name: The name of the collection to delete.
+        :type  collection_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.drop_collection(collection_name, timeout)
+
+    def has_collection(self, collection_name, timeout=None):
+        """
+        Checks whether a specified collection exists.
+
+        :param collection_name: The name of the collection to check.
+        :type  collection_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: If specified collection exists
+        :rtype: bool
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.has_collection(collection_name, timeout)
+
+    def describe_collection(self, collection_name, timeout=None):
+        """
+        Returns the schema of specified collection.
+        Example: {'collection_name': 'create_collection_eXgbpOtn', 'auto_id': True, 'description': '',
+                 'fields': [{'field_id': 100, 'name': 'INT32', 'description': '', 'type': 4, 'params': {},
+                 {'field_id': 101, 'name': 'FLOAT_VECTOR', 'description': '', 'type': 101,
+                 'params': {'dim': '128'}}]}
+
+        :param collection_name: The name of the collection to describe.
+        :type  collection_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: The schema of collection to describe.
+        :rtype: dict
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.describe_collection(collection_name, timeout)
+
+    def load_collection(self, collection_name, timeout=None, **kwargs):
+        """
+        Loads a specified collection from disk to memory.
+
+        :param collection_name: The name of the collection to load.
+        :type  collection_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.load_collection(collection_name=collection_name, timeout=timeout, **kwargs)
+
+    def release_collection(self, collection_name, timeout=None):
+        """
+        Clear collection data from memory.
+
+        :param collection_name: The name of collection to release.
+        :type  collection_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.release_collection(collection_name=collection_name, timeout=timeout)
+
+    def get_collection_stats(self, collection_name, timeout=None, **kwargs):
+        """
+        Returns collection statistics information.
+        Example: {"row_count": 10}
+
+        :param collection_name: The name of collection.
+        :type  collection_name: str.
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: statistics information
+        :rtype: dict
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            stats = handler.get_collection_stats(collection_name, timeout, **kwargs)
+            result = {stat.key: stat.value for stat in stats}
+            result["row_count"] = int(result["row_count"])
+            return result
+
+    def list_collections(self, timeout=None):
+        """
+        Returns a list of all collection names.
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: List of collection names, return when operation is successful
+        :rtype: list[str]
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.list_collections(timeout)
+
+    def create_partition(self, collection_name, partition_name, timeout=None):
+        """
+        Creates a partition in a specified collection. You only need to import the
+        parameters of partition_name to create a partition. A collection cannot hold
+        partitions of the same tag, whilst you can insert the same tag in different collections.
+
+        :param collection_name: The name of the collection to create partitions in.
+        :type  collection_name: str
+
+        :param partition_name: The tag name of the partition to create.
+        :type  partition_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.create_partition(collection_name, partition_name, timeout)
+
+    def drop_partition(self, collection_name, partition_name, timeout=None):
+        """
+        Deletes the specified partition in a collection. Note that the default partition
+        '_default' is not permitted to delete. When a partition deleted, all data stored in it
+        will be deleted.
+
+        :param collection_name: The name of the collection to delete partitions from.
+        :type  collection_name: str
+
+        :param partition_name: The tag name of the partition to delete.
+        :type  partition_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.drop_partition(collection_name, partition_name, timeout)
+
+    def has_partition(self, collection_name, partition_name, timeout=None):
+        """
+        Checks if a specified partition exists in a collection.
+
+        :param collection_name: The name of the collection to find the partition in.
+        :type  collection_name: str
+
+        :param partition_name: The tag name of the partition to check
+        :type  partition_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: Whether a specified partition exists in a collection.
+        :rtype: bool
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.has_partition(collection_name, partition_name, timeout)
+
+    def load_partitions(self, collection_name, partition_names, timeout=None):
+        """
+        Load specified partitions from disk to memory.
+
+        :param collection_name: The collection name which partitions belong to.
+        :type  collection_name: str
+
+        :param partition_names: The specified partitions to load.
+        :type  partition_names: list[str]
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.load_partitions(collection_name=collection_name,
+                                           partition_names=partition_names, timeout=timeout)
+
+    def release_partitions(self, collection_name, partition_names, timeout=None):
+        """
+        Clear partitions data from memory.
+
+        :param collection_name: The collection name which partitions belong to.
+        :type  collection_name: str
+
+        :param partition_names: The specified partition to release.
+        :type  partition_names: list[str]
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.release_partitions(collection_name=collection_name,
+                                              partition_names=partition_names, timeout=timeout)
+
+    def list_partitions(self, collection_name, timeout=None):
+        """
+        Returns a list of all partition tags in a specified collection.
+
+        :param collection_name: The name of the collection to retrieve partition tags from.
+        :type  collection_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: A list of all partition tags in specified collection.
+        :rtype: list[str]
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.list_partitions(collection_name, timeout)
+
+    def get_partition_stats(self, collection_name, partition_name, timeout=None, **kwargs):
+        """
+        Returns partition statistics information.
+        Example: {"row_count": 10}
+
+        :param collection_name: The name of collection.
+        :type  collection_name: str.
+
+        :param partition_name: The name of partition.
+        :type  partition_name: str.
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: statistics information
+        :rtype: dict
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            stats = handler.get_partition_stats(collection_name, partition_name, timeout, **kwargs)
+            result = {stat.key: stat.value for stat in stats}
+            result["row_count"] = int(result["row_count"])
+            return result
+
+    def create_alias(self, collection_name, alias, timeout=None, **kwargs):
+        """
+        Specify alias for a collection.
+        Alias cannot be duplicated, you can't assign same alias to different collections.
+        But you can specify multiple aliases for a collection, for example:
+            before create_alias("collection_1", "bob"):
+                collection_1's aliases = ["tom"]
+            after create_alias("collection_1", "bob"):
+                collection_1's aliases = ["tom", "bob"]
+
+        :param collection_name: The name of collection.
+        :type  collection_name: str.
+
+        :param alias: The alias of the collection.
+        :type  alias: str.
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.create_alias(collection_name, alias, timeout, **kwargs)
+
+    def drop_alias(self, alias, timeout=None, **kwargs):
+        """
+        Delete an alias.
+        This api no need to specify collection name because the milvus server knows which collection it belongs.
+        For example:
+            before drop_alias("bob"):
+                collection_1's aliases = ["tom", "bob"]
+            after drop_alias("bob"):
+                collection_1's aliases = ["tom"]
+
+        :param alias: The alias to be deleted.
+        :type  alias: str.
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.drop_alias(alias, timeout, **kwargs)
+
+    def alter_alias(self, collection_name, alias, timeout=None, **kwargs):
+        """
+        Change alias of a collection to another collection. If the alias doesn't exist, the api will return error.
+        Alias cannot be duplicated, you can't assign same alias to different collections.
+        This api can change alias owner collection, for example:
+            before alter_alias("collection_2", "bob"):
+                collection_1's aliases = ["bob"]
+                collection_2's aliases = []
+            after alter_alias("collection_2", "bob"):
+                collection_1's aliases = []
+                collection_2's aliases = ["bob"]
+
+        :param collection_name: The name of collection.
+        :type  collection_name: str.
+
+        :param alias: The new alias of the collection.
+        :type  alias: str.
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.alter_alias(collection_name, alias, timeout, **kwargs)
+
+    def create_index(self, collection_name, field_name, params, timeout=None, **kwargs):
+        """
+        Creates an index for a field in a specified collection. Milvus does not support creating multiple
+        indexes for a field. In a scenario where the field already has an index, if you create another one,
+        the server will replace the existing index files with the new ones.
+
+        Note that you need to call load_collection() or load_partitions() to make the new index take effect
+        on searching tasks.
+
+        :param collection_name: The name of the collection to create field indexes.
+        :type  collection_name: str
+
+        :param field_name: The name of the field to create an index for.
+        :type  field_name: str
+
+        :param params: Indexing parameters.
+        :type  params: dict
+            There are examples of supported indexes:
+
+            IVF_FLAT:
+                ` {
+                    "metric_type":"L2",
+                    "index_type": "IVF_FLAT",
+                    "params":{"nlist": 1024}
+                }`
+
+            IVF_PQ:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "IVF_PQ",
+                    "params": {"nlist": 1024, "m": 8, "nbits": 8}
+                }`
+
+            IVF_SQ8:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "IVF_SQ8",
+                    "params": {"nlist": 1024}
+                }`
+
+            BIN_IVF_FLAT:
+                `{
+                    "metric_type": "JACCARD",
+                    "index_type": "BIN_IVF_FLAT",
+                    "params": {"nlist": 1024}
+                }`
+
+            HNSW:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "HNSW",
+                    "params": {"M": 48, "efConstruction": 50}
+                }`
+
+            RHNSW_FLAT:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "RHNSW_FLAT",
+                    "params": {"M": 48, "efConstruction": 50}
+                }`
+
+            RHNSW_PQ:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "RHNSW_PQ",
+                    "params": {"M": 48, "efConstruction": 50, "PQM": 8}
+                }`
+
+            RHNSW_SQ:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "RHNSW_SQ",
+                    "params": {"M": 48, "efConstruction": 50}
+                }`
+
+            ANNOY:
+                `{
+                    "metric_type": "L2",
+                    "index_type": "ANNOY",
+                    "params": {"n_trees": 8}
+                }`
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :param kwargs:
+            * *_async* (``bool``) --
+              Indicate if invoke asynchronously. When value is true, method returns a IndexFuture object;
+              otherwise, method returns results from server.
+            * *_callback* (``function``) --
+              The callback function which is invoked after server response successfully. It only take
+              effect when _async is set to True.
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.create_index(collection_name, field_name, params, timeout, **kwargs)
+
+    def drop_index(self, collection_name, field_name, timeout=None):
+        """
+        Removes the index of a field in a specified collection.
+
+        :param collection_name: The name of the collection to remove the field index from.
+        :type  collection_name: str
+
+        :param field_name: The name of the field to remove the index of.
+        :type  field_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.drop_index(collection_name=collection_name,
+                                      field_name=field_name, index_name="_default_idx", timeout=timeout)
+
+    def describe_index(self, collection_name, index_name="", timeout=None):
+        """
+        Returns the schema of index built on specified field.
+        Example: {'index_type': 'FLAT', 'metric_type': 'L2', 'params': {'nlist': 128}}
+
+        :param collection_name: The name of the collection which field belong to.
+        :type  collection_name: str
+
+        :param field_name: The name of field to describe.
+        :type  field_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: the schema of index built on specified field.
+        :rtype: dict
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.describe_index(collection_name, index_name, timeout)
+
+    def insert(self, collection_name, entities, partition_name=None, timeout=None, **kwargs):
+        """
+        Inserts entities in a specified collection.
+
+        :param collection_name: The name of the collection to insert entities in.
+        :type  collection_name: str.
+
+        :param entities: The entities to insert.
+        :type  entities: list
+
+        :param partition_name: The name of the partition to insert entities in. The default value is
+         None. The server stores entities in the “_default” partition by default.
+        :type  partition_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :param kwargs:
+            * *_async* (``bool``) --
+              Indicate if invoke asynchronously. When value is true, method returns a MutationFuture object;
+              otherwise, method returns results from server.
+            * *_callback* (``function``) --
+              The callback function which is invoked after server response successfully. It only take
+              effect when _async is set to True.
+
+        :return: list of ids of the inserted vectors.
+        :rtype: list[int]
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.bulk_insert(collection_name, entities, partition_name, timeout, **kwargs)
+
+    def delete(self, collection_name, expr, partition_name=None, timeout=None, **kwargs):
+        """
+        Delete entities with an expression condition.
+        And return results to show which primary key is deleted successfully
+
+        :param collection_name: Name of the collection to delete entities from
+        :type  collection_name: str
+
+        :param expr: The expression to specify entities to be deleted
+        :type  expr: str
+
+        :param partition_name: Name of partitions that contain entities
+        :type  partition_name: str
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur
+        :type  timeout: float
+
+        :return: list of ids of the deleted vectors.
+        :rtype: list
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.delete(collection_name, expr, partition_name, timeout, **kwargs)
+
+    def flush(self, collection_names=None, timeout=None, **kwargs):
+        """
+        Internally, Milvus organizes data into segments, and indexes are built in a per-segment manner.
+        By default, a segment will be sealed if it grows large enough (according to segment size configuration).
+        If any index is specified on certain field, the index-creating task will be triggered automatically
+        when a segment is sealed.
+
+        The flush() call will seal all the growing segments immediately of the given collection,
+        and force trigger the index-creating tasks.
+
+        :param collection_names: The name of collection to flush.
+        :type  collection_names: list[str]
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :param kwargs:
+            * *_async* (``bool``) --
+              Indicate if invoke asynchronously. When value is true, method returns a FlushFuture object;
+              otherwise, method returns results from server.
+            * *_callback* (``function``) --
+              The callback function which is invoked after server response successfully. It only take
+              effect when _async is set to True.
+
+        :return: None
+        :rtype: NoneType
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.flush(collection_names, timeout, **kwargs)
+
+    def search(self, collection_name, data, anns_field, param, limit, expression=None, partition_names=None,
+               output_fields=None, timeout=None, round_decimal=-1, **kwargs):
+        """
+        Searches a collection based on the given expression and returns query results.
+
+        :param collection_name: The name of the collection to search.
+        :type  collection_name: str
+        :param data: The vectors of search data, the length of data is number of query (nq), the dim of every vector in
+                     data must be equal to vector field's of collection.
+        :type  data: list[list[float]]
+        :param anns_field: The vector field used to search of collection.
+        :type  anns_field: str
+        :param param: The parameters of search, such as nprobe, etc.
+        :type  param: dict
+        :param limit: The max number of returned record, we also called this parameter as topk.
+        :type  limit: int
+        :param expression: The boolean expression used to filter attribute.
+        :type  expression: str
+        :param partition_names: The names of partitions to search.
+        :type  partition_names: list[str]
+        :param output_fields: The fields to return in the search result, not supported now.
+        :type  output_fields: list[str]
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+        :param round_decimal: The specified number of decimal places of returned distance
+        :type  round_decimal: int
+        :param kwargs:
+            * *_async* (``bool``) --
+              Indicate if invoke asynchronously. When value is true, method returns a SearchFuture object;
+              otherwise, method returns results from server.
+            * *_callback* (``function``) --
+              The callback function which is invoked after server response successfully. It only take
+              effect when _async is set to True.
+            * *consistency_level* (``str/int``) --
+              Which consistency level to use when searching in the collection. For details, see
+              https://github.com/milvus-io/milvus/blob/master/docs/developer_guides/how-guarantee-ts-works.md.
+              Note: this parameter will overwrite the same parameter user specified when creating the collection,
+              if no consistency level was specified, search will use the consistency level defined when you create collection.
+            * *guarantee_timestamp* (``int``) --
+              This function instructs Milvus to see all operations performed before a provided timestamp. If no
+              such timestamp is provided, then Milvus will search all operations performed to date.
+              Note: only used in Customized consistency level.
+            * *graceful_time* (``int``) --
+              Only used in bounded consistency level. If graceful_time is set, PyMilvus will use current timestamp minus
+              the graceful_time as the `guarantee_timestamp`. This option is 5s by default if not set.
+            * *travel_timestamp* (``int``) --
+              Users can specify a timestamp in a search to get results based on a data view
+                        at a specified point in time.
+
+        :return: Query result. QueryResult is iterable and is a 2d-array-like class, the first dimension is
+                 the number of vectors to query (nq), the second dimension is the number of limit(topk).
+        :rtype: QueryResult
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.search(collection_name, data, anns_field, param, limit, expression,
+                                  partition_names, output_fields, timeout, round_decimal, **kwargs)
+
+    def calc_distance(self, vectors_left, vectors_right, params=None, timeout=None, **kwargs):
+        """
+        Calculate distance between two vector arrays.
+
+        :param vectors_left: The vectors on the left of operator.
+        :type  vectors_left: dict
+        `{"ids": [1, 2, 3, .... n], "collection": "c_1", "partition": "p_1", "field": "v_1"}`
+        or
+        `{"float_vectors": [[1.0, 2.0], [3.0, 4.0], ... [9.0, 10.0]]}`
+        or
+        `{"bin_vectors": [b'\x94', b'N', ... b'\xca']}`
+
+        :param vectors_right: The vectors on the right of operator.
+        :type  vectors_right: dict
+        `{"ids": [1, 2, 3, .... n], "collection": "col_1", "partition": "p_1", "field": "v_1"}`
+        or
+        `{"float_vectors": [[1.0, 2.0], [3.0, 4.0], ... [9.0, 10.0]]}`
+        or
+        `{"bin_vectors": [b'\x94', b'N', ... b'\xca']}`
+
+        :param params: key-value pair parameters
+                       Key: "metric_type"/"metric"    Value: "L2"/"IP"/"HAMMING"/"TANIMOTO", default is "L2",
+                       Key: "sqrt"    Value: true or false, default is false    Only for "L2" distance
+                       Key: "dim"     Value: set this value if dimension is not a multiple of 8,
+                                             otherwise the dimension will be calculted by list length,
+                                             only for "HAMMING" and "TANIMOTO"
+        :type  params: dict
+            Examples of supported metric_type:
+                `{"metric_type": "L2", "sqrt": true}`
+                `{"metric_type": "IP"}`
+                `{"metric_type": "HAMMING", "dim": 17}`
+                `{"metric_type": "TANIMOTO"}`
+            Note: metric type are case insensitive
+
+        :return: 2-d array distances
+        :rtype: list[list[int]] for "HAMMING" or list[list[float]] for others
+            Assume the vectors_left: L_1, L_2, L_3
+            Assume the vectors_right: R_a, R_b
+            Distance between L_n and R_m we called "D_n_m"
+            The returned distances are arranged like this:
+              [D_1_a, D_1_b, D_2_a, D_2_b, D_3_a, D_3_b]
+
+        """
+        with self._connection() as handler:
+            return handler.calc_distance(vectors_left, vectors_right, params, timeout, **kwargs)
+
+    def get_query_segment_info(self, collection_name, timeout=None, **kwargs):
+        """
+        Notifies Proxy to return segments information from query nodes.
+
+        :param collection_name: The name of the collection to get segments info.
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur.
+        :type  timeout: float
+
+        :return: QuerySegmentInfo:
+            QuerySegmentInfo is the growing segments's information in query cluster.
+        :rtype: QuerySegmentInfo
+        """
+        with self._connection() as handler:
+            return handler.get_query_segment_info(collection_name, timeout, **kwargs)
+
+    def load_collection_progress(self, collection_name, timeout=None):
+        with self._connection() as handler:
+            return handler.load_collection_progress(collection_name, timeout=timeout)
+
+    def load_partitions_progress(self, collection_name, partition_names, timeout=None):
+        with self._connection() as handler:
+            return handler.load_partitions_progress(collection_name, partition_names, timeout=timeout)
+
+    def wait_for_loading_collection_complete(self, collection_name, timeout=None):
+        with self._connection() as handler:
+            return handler.wait_for_loading_collection(collection_name, timeout=timeout)
+
+    def wait_for_loading_partitions_complete(self, collection_name, partition_names, timeout=None):
+        with self._connection() as handler:
+            return handler.wait_for_loading_partitions(collection_name, partition_names, timeout=timeout)
+
+    def get_index_build_progress(self, collection_name, index_name, timeout=None):
+        with self._connection() as handler:
+            return handler.get_index_build_progress(collection_name, index_name, timeout=timeout)
+
+    def wait_for_creating_index(self, collection_name, index_name, timeout=None):
+        with self._connection() as handler:
+            return handler.wait_for_creating_index(collection_name, index_name, timeout=timeout)
+
+    def dummy(self, request_type, timeout=None):
+        with self._connection() as handler:
+            return handler.dummy(request_type, timeout=timeout)
+
+    def query(self, collection_name, expr, output_fields=None, partition_names=None, timeout=None, **kwargs):
+        """
+        Query with a set of criteria, and results in a list of records that match the query exactly.
+
+        :param collection_name: Name of the collection to retrieve entities from
+        :type  collection_name: str
+
+        :param expr: The query expression
+        :type  expr: str
+
+        :param output_fields: A list of fields to return
+        :type  output_fields: list[str]
+
+        :param partition_names: Name of partitions that contain entities
+        :type  partition_names: list[str]
+
+        :param timeout: An optional duration of time in seconds to allow for the RPC. When timeout
+                        is set to None, client waits until server response or error occur
+        :type  timeout: float
+
+        :return: A list that contains all results
+        :rtype: list
+
+        :param kwargs:
+            * *consistency_level* (``str/int``) --
+              Which consistency level to use during a query on the collection. For details, see
+              https://github.com/milvus-io/milvus/blob/master/docs/developer_guides/how-guarantee-ts-works.md.
+              Note: this parameter will overwrite the same parameter user specified when creating the collection,
+              if no consistency level was specified, query will use the consistency level defined when you create collection.
+            * *guarantee_timestamp* (``int``) --
+              This function instructs Milvus to see all operations performed before a provided timestamp. If no
+              such timestamp is specified, Milvus queries all operations performed to date.
+              Note: only used in Customized consistency level.
+            * *graceful_time* (``int``) --
+              Only used in bounded consistency level. If graceful_time is set, PyMilvus will use current timestamp minus
+              the graceful_time as the `guarantee_timestamp`. This option is 5s by default if not set.
+            * *travel_timestamp* (``int``) --
+              Users can specify a timestamp in a search to get results based on a data view
+                        at a specified point in time.
+
+        :raises RpcError: If gRPC encounter an error
+        :raises ParamError: If parameters are invalid
+        :raises BaseException: If the return result from server is not ok
+        """
+        with self._connection() as handler:
+            return handler.query(collection_name, expr, output_fields, partition_names, timeout=timeout, **kwargs)
+
+    def load_balance(self, src_node_id, dst_node_ids, sealed_segment_ids, timeout=None, **kwargs):
+        """
+        Do load balancing operation from source query node to destination query node.
+
+        :param src_node_id: The source query node id to balance.
+        :type  src_node_id: int
+
+        :param dst_node_ids: The destination query node ids to balance.
+        :type  dst_node_ids: list[int]
+
+        :param sealed_segment_ids: Sealed segment ids to balance.
+        :type  sealed_segment_ids: list[int]
+
+        :param timeout: The timeout for this method, unit: second
+        :type  timeout: int
+
+        :raises BaseException: If query nodes not exist.
+        :raises BaseException: If sealed segments not exist.
+        """
+        with self._connection() as handler:
+            return handler.load_balance(src_node_id, dst_node_ids, sealed_segment_ids, timeout, **kwargs)
+
+    def compact(self, collection_name, timeout=None, **kwargs) -> int:
+        """
+        Do compaction for the collection.
+
+        :param collection_name: The collection name to compact
+        :type  collection_name: str
+
+        :param timeout: The timeout for this method, unit: second
+        :type  timeout: int
+
+        :return: the compaction ID
+        :rtype: int
+
+        :raises BaseException: If collection name not exist.
+        """
+        with self._connection() as handler:
+            return handler.compact(collection_name, timeout, **kwargs)
+
+    def get_compaction_state(self, compaction_id: int, timeout=None, **kwargs) -> CompactionState:
+        """
+        Get compaction states of a targeted compaction id
+
+        :param compaction_id: the id returned by compact
+        :type  compaction_id: int
+
+        :param timeout: The timeout for this method, unit: second
+        :type  timeout: int
+
+        :return: the state of the compaction
+        :rtype: CompactionState
+
+        :raises BaseException: If compaction_id doesn't exist.
+        """
+
+        with self._connection() as handler:
+            return handler.get_compaction_state(compaction_id, timeout, **kwargs)
+
+    def wait_for_compaction_completed(self, compaction_id: int, timeout=None, **kwargs) -> CompactionState:
+        with self._connection() as handler:
+            return handler.wait_for_compaction_completed(compaction_id, timeout=timeout, **kwargs)
+
+    def get_compaction_plans(self, compaction_id: int, timeout=None, **kwargs) -> CompactionPlans:
+        """
+        Get compaction states of a targeted compaction id
+
+        :param compaction_id: the id returned by compact
+        :type  compaction_id: int
+
+        :param timeout: The timeout for this method, unit: second
+        :type  timeout: int
+
+        :return: the state of the compaction
+        :rtype: CompactionState
+
+        :raises BaseException: If compaction_id doesn't exist.
+        """
+        with self._connection() as handler:
+            return handler.get_compaction_plans(compaction_id, timeout, **kwargs)
