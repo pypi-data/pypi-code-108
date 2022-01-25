@@ -1,0 +1,1 @@
+from .categories_table import CategoriesTable
