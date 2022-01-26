@@ -1,0 +1,6 @@
+no_candidate_for_printer_ack = "Candidate ID is unassigned => Can't get topic for printer-acknowledgement"
+no_printer_for_sensor_ack = "Printer ID is unassigned => Can't get topic for sensor-acknowledgement"
+no_printer_for_sensor_reg = "Printer ID is unassigned => Can't get topic for sensor-registration"
+no_printer_for_sensor_readings = "Printer ID is unassigned => Can't get topic for sensor-readings"
+no_printer_for_job_updates = "Printer ID is unassigned => Can't get topic for job-updates"
+no_printer_for_job_commands = "Printer ID is unassigned => Can't get topic for job-commands"
