@@ -1,0 +1,7 @@
+
+
+ASSET = 1
+CONTENT = 2
+
+WEBRESOURCE = 1
+TEXT = 2
