@@ -1,0 +1,2 @@
+USER_NESTED_FIELDS = ['jobOffers']
+USER_EMPTY_CONTAINERS = ['jobOffers']
