@@ -1,0 +1,23 @@
+from gi.repository import Gtk, Gdk, GdkPixbuf, Gio, Atk, Gst
+
+Gtk.Button
+
+Gtk.DialogFlags
+
+Gtk.MINOR_VERSION
+
+Gtk.DirectionType
+
+Gtk.Actionable
+
+Gtk.AboutDialog
+
+GdkPixbuf.Pixbuf
+
+Gdk.Atom
+
+Gio.Action
+
+Gst.Bin
+
+Atk.Component
