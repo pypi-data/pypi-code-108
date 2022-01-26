@@ -1,0 +1,41 @@
+#
+# Copyright 2021 Grupo de Sistemas Inteligentes, DIT, Universidad Politecnica de Madrid (UPM)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from sklearn.base import TransformerMixin
+import numpy as np
+
+class Preprocessor(TransformerMixin):
+    def __init__(self, preprocessor):
+        self.preprocessor = preprocessor
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X, y=None):
+        X_trans = []
+        for i, x_i in enumerate(X):
+            X_trans.append(self.preprocessor.preprocess(x_i))
+        return np.array(X_trans)
+
+class JoinTransformer(TransformerMixin):
+
+    def transform(self, X, y=None, **fit_params):
+        return [' '.join(x) for x in X]
+
+    def fit_transform(self, X, y=None, **fit_params):
+        self.fit(X, y, **fit_params)
+        return self.transform(X)
+
+    def fit(self, X, y=None, **fit_params):
+        return self
