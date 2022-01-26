@@ -1,0 +1,2 @@
+class NotAsyncError(Exception):
+    pass
