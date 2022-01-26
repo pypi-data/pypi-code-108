@@ -1,0 +1,32 @@
+BUILT_IN = [
+    {
+        "name":"reserved",
+        "zname":"保留字",
+        "filetype":"json",
+        "path":"__builtin__/reserved.json"
+    },
+    {
+        "name":"constants",
+        "zname":"内置常量",
+        "filetype":"json",
+        "path":"__builtin__/constants.json"
+    },
+    {
+        "name":"exceptions",
+        "zname":"内置异常",
+        "filetype":"json",
+        "path":"__builtin__/exceptions.json"
+    },
+    {
+        "name":"function",
+        "zname":"内置函数",
+        "filetype":"json",
+        "path":"__builtin__/functions.json"
+    },
+    {
+        "name":"stdtypes",
+        "zname":"内置类型",
+        "filetype":"json",
+        "path":"__builtin__/stdtypes.json",
+    },
+]
