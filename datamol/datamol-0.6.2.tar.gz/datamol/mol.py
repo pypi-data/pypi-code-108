@@ -1,0 +1,902 @@
+from typing import Union
+from typing import List
+from typing import Tuple
+from typing import Optional
+from typing import Dict
+from typing import Any
+
+import copy
+import random
+import itertools
+import hashlib
+
+from loguru import logger
+
+from rdkit import Chem
+from rdkit.Chem import rdmolops
+from rdkit.Chem.MolStandardize import rdMolStandardize
+from rdkit.Chem.MolStandardize import canonicalize_tautomer_smiles
+
+import datamol as dm
+from . import _sanifix4
+
+PERIODIC_TABLE = Chem.rdchem.GetPeriodicTable()
+TRIPLE_BOND = Chem.rdchem.BondType.TRIPLE
+DOUBLE_BOND = Chem.rdchem.BondType.DOUBLE
+SINGLE_BOND = Chem.rdchem.BondType.SINGLE
+AROMATIC_BOND = Chem.rdchem.BondType.AROMATIC
+DATIVE_BOND = Chem.rdchem.BondType.DATIVE
+
+
+def copy_mol(mol: dm.Mol) -> dm.Mol:
+    """Copy a molecule and return a new one.
+
+    Args:
+        mol: a molecule to copy.
+    """
+    return copy.deepcopy(mol)
+
+
+def to_mol(
+    mol: Union[str, dm.Mol],
+    add_hs: bool = False,
+    explicit_only: bool = False,
+    ordered: bool = False,
+    kekulize: bool = False,
+    sanitize: bool = True,
+) -> Optional[dm.Mol]:
+    """Convert an input molecule (smiles representation) into a `dm.Mol`.
+
+    Args:
+        mol: A SMILES or a molecule.
+        add_hs: Whether hydrogens should be added the molecule.
+        explicit_only: Whether to only add explicit hydrogen or both
+            (implicit and explicit). when `add_hs` is set to True.
+        ordered: Whether the atom should be ordered. This option is
+            important if you want to ensure that the features returned will always maintain
+            a single atom order for the same molecule, regardless of its original SMILES representation.
+        kekulize: Whether to perform kekulization of the input molecules.
+        sanitize: Whether to apply rdkit sanitization when input is a SMILES.
+
+    Returns:
+        mol: the molecule if some conversion have been made. If the conversion fails
+        None is returned so make sure that you handle this case on your own.
+    """
+
+    if not isinstance(mol, (str, dm.Mol)):
+        raise ValueError(f"Input should be a dm.Mol or a string instead of '{type(mol)}'")
+
+    if isinstance(mol, str):
+        _mol = Chem.MolFromSmiles(mol, sanitize=sanitize)  # type: ignore
+
+        if not sanitize and _mol is not None:
+            _mol.UpdatePropertyCache(False)
+    else:
+        _mol = mol
+
+    # Add hydrogens
+    if _mol is not None and add_hs:
+        _mol = Chem.AddHs(_mol, explicitOnly=explicit_only, addCoords=True)  # type: ignore
+
+    # Reorder atoms
+    if _mol is not None and ordered:
+        _mol = reorder_atoms(_mol)
+
+    if _mol is not None and kekulize:
+        Chem.Kekulize(_mol, clearAromaticFlags=False)  # type: ignore
+    return _mol
+
+
+def same_mol(
+    mol1: Optional[dm.Mol],
+    mol2: Optional[dm.Mol],
+    use_non_standard_inchikey: bool = False,
+) -> bool:
+    """Check two molecules are the same by comparing their InChiKey.
+
+    Invalid molecules (None) are always considered as not the same.
+
+    Args:
+        mol1: A molecule.
+        mol2: A molecule.
+        use_non_standard_inchikey: Whether to use the standard or non-standard InChiKey.
+    """
+
+    if mol1 is None or mol2 is None:
+        return False
+
+    if use_non_standard_inchikey:
+        return dm.to_inchikey_non_standard(mol1) == dm.to_inchikey_non_standard(mol2)
+    else:
+        return dm.to_inchikey(mol1) == dm.to_inchikey(mol2)
+
+
+def unique_id(mol: dm.Mol) -> Optional[str]:
+    """A datamol unique molecule ID.
+
+    The ID is an MD5 hash of the non-standard InChiKey provided
+    by `dm.to_inchikey_non_standard()`. It guarantees uniqueness for
+    different tautomeric forms of the same molecule.
+
+    Args:
+        mol: A molecule.
+    """
+    ik = dm.to_inchikey_non_standard(mol)
+
+    if ik is None:
+        return None
+
+    return hashlib.md5(ik.encode("utf-8")).hexdigest()
+
+
+def reorder_atoms(
+    mol: dm.Mol,
+    break_ties: bool = True,
+    include_chirality: bool = True,
+    include_isotopes: bool = True,
+) -> Optional[dm.Mol]:
+    """Reorder the atoms in a mol. It ensures a single atom order for the same molecule,
+    regardless of its original representation.
+
+    Args:
+        mol: a molecule.
+        break_ties: Force breaking of ranked ties.
+        include_chirality: Use chiral information when computing rank.
+        include_isotopes: Use isotope information when computing rank.
+
+    Returns:
+        mol: a molecule.
+    """
+    if mol.GetNumAtoms() == 0:
+        return mol
+
+    new_order = Chem.CanonicalRankAtoms(  # type: ignore
+        mol,
+        breakTies=break_ties,
+        includeChirality=include_chirality,
+        includeIsotopes=include_isotopes,
+    )
+    new_order = sorted([(y, x) for x, y in enumerate(new_order)])
+    return Chem.RenumberAtoms(mol, [y for (x, y) in new_order])  # type: ignore
+
+
+def randomize_atoms(mol: dm.Mol) -> Optional[dm.Mol]:
+    """Randomize the position of the atoms in a mol.
+
+    Args:
+        mol: a molecule.
+
+    Returns:
+        mol: a molecule.
+    """
+    if mol.GetNumAtoms() == 0:
+        return mol
+
+    atom_indices = list(range(mol.GetNumAtoms()))
+    random.shuffle(atom_indices)
+    return Chem.RenumberAtoms(mol, atom_indices)  # type: ignore
+
+
+def to_neutral(mol: dm.Mol) -> Optional[dm.Mol]:
+    """Neutralize the charge of a molecule.
+
+    Args:
+        mol: a molecule.
+
+    Returns:
+        mol: a molecule.
+    """
+    if mol is None:
+        return mol
+
+    for a in mol.GetAtoms():
+        if a.GetFormalCharge() < 0 or (
+            a.GetExplicitValence() >= PERIODIC_TABLE.GetDefaultValence(a.GetSymbol())
+            and a.GetFormalCharge() > 0
+        ):
+            a.SetFormalCharge(0)
+            a.UpdatePropertyCache(False)
+    return mol
+
+
+def sanitize_mol(
+    mol: dm.Mol,
+    charge_neutral: bool = False,
+    sanifix: bool = True,
+    verbose: bool = True,
+    add_hs: bool = False,
+) -> Optional[dm.Mol]:
+    """An augmented version of RDKit `sanitize=True`. It uses a
+    mol-SMILES-mol conversion to catch potential aromaticity errors
+    and try to fix aromatic nitrogen (using the popular sanifix4 script).
+    Optionally, it can neutralize the charge of the molecule.
+
+    Note #1: Only the first conformer (if present) will be preserved and
+    a warning will be displayed if more than one conformer is detected.
+
+    Note #2: The molecule's properties will be preserved but the atom's
+    properties will be lost.
+
+    Args:
+        mol: a molecule.
+        charge_neutral: whether charge neutralization should be applied.
+        sanifix: whether to run the sanifix from James Davidson
+            (sanifix4.py) that try to adjust aromatic nitrogens.
+        verbose: Whether displaying a warning about multiple conformers.
+        add_hs: Add hydrogens to the returned molecule. Useful when the input
+            molecule already contains hydrogens.
+
+    Returns:
+        mol: a molecule.
+    """
+    if mol is None:
+        return mol
+
+    # Extract properties.
+    original_mol = copy_mol(mol)
+    properties = original_mol.GetPropsAsDict()
+
+    if charge_neutral:
+        mol = to_neutral(mol)
+
+    if sanifix:
+        mol = _sanifix4.sanifix(mol)
+
+    if mol is not None:
+
+        # Detect multiple conformers
+        if verbose and mol.GetNumConformers() > 1:
+            logger.warning(
+                f"The molecule contains multiple conformers. Only the first one will be preserved."
+            )
+
+        # Try catch to avoid occasional aromaticity errors
+        try:
+            # `cxsmiles` is used here to preserve the first conformer.
+            mol = to_mol(dm.to_smiles(mol, cxsmiles=True), sanitize=True, add_hs=add_hs)  # type: ignore
+        except Exception:
+            mol = None
+
+    if mol is not None:
+        # Insert back properties.
+        mol = dm.set_mol_props(mol, properties)
+
+    return mol
+
+
+def sanitize_smiles(smiles: str, isomeric: bool = True) -> Optional[str]:
+    """Takes SMILES string and returns its sanitized version.
+
+    Args:
+        smiles: smiles to be sanitized.
+        isomeric: Whether to include information about stereochemistry in the SMILES.
+
+    Returns:
+        sanitized smiles.
+    """
+    try:
+        mol = dm.to_mol(smiles, sanitize=False)
+        mol = dm.sanitize_mol(mol, False)
+    except Exception:
+        return None
+
+    if mol is None:
+        return None
+
+    try:
+        smiles = dm.to_smiles(mol, isomeric=isomeric)  # type: ignore
+    except:
+        return None
+    return smiles
+
+
+def sanitize_first(mols: List[dm.Mol], charge_neutral: bool = False, sanifix: bool = True):
+    """Sanitize a list of molecules and return the first valid molecule seen in the list.
+
+    Args:
+        mols: a list of molecules.
+        charge_neutral: whether charge neutralization should be applied.
+        sanifix: whether to run the sanifix from James Davidson
+            (sanifix4.py) that try to adjust aromatic nitrogens.
+
+    Returns:
+        mol: a molecule.
+    """
+    for mol in mols:
+        mol = sanitize_mol(mol, charge_neutral=charge_neutral, sanifix=sanifix)
+        if mol:
+            return mol
+    return None
+
+
+def standardize_smiles(smiles: str, tautomer: bool = False):
+    r"""
+    Apply smile standardization procedure. This is a convenient function wrapped arrounf RDKit
+    smiles standardizer and tautomeric canonicalization.
+
+    Args:
+        smiles: Smiles to standardize
+        tautomer: Whether to canonicalize tautomers
+
+    Returns:
+        standard_smiles: the standardized smiles
+    """
+
+    smiles = rdMolStandardize.StandardizeSmiles(smiles)
+    if tautomer:
+        smiles = canonicalize_tautomer_smiles(smiles)
+    return smiles
+
+
+def standardize_mol(
+    mol: dm.Mol,
+    disconnect_metals: bool = False,
+    normalize: bool = True,
+    reionize: bool = True,
+    uncharge: bool = False,
+    stereo: bool = True,
+):
+    r"""
+    This function returns a standardized version the given molecule, with or without disconnect the metals.
+    The process is apply in the order of the argument.
+
+    Arguments:
+        mol: The molecule to standardize.
+        disconnect_metals: Whether to disconnect the metallic atoms from non-metals
+        normalize: Whether to apply normalization (correct functional groups and recombine charges).
+        reionize: Whether to apply molecule reionization
+        uncharge: Whether to remove all charge from molecule
+        stereo: Whether to attempt to assign stereochemistry
+
+    Returns:
+        mol: The standardized molecule.
+    """
+    mol = copy_mol(mol)
+
+    if disconnect_metals:
+        md = rdMolStandardize.MetalDisconnector()
+        mol = md.Disconnect(mol)
+
+    if normalize:
+        mol = rdMolStandardize.Normalize(mol)
+
+    if reionize:
+        reionizer = rdMolStandardize.Reionizer()
+        mol = reionizer.reionize(mol)
+
+    if uncharge:
+        uncharger = rdMolStandardize.Uncharger()
+        mol = uncharger.uncharge(mol)
+
+    if stereo:
+        Chem.AssignStereochemistry(mol, force=False, cleanIt=True)  # type: ignore
+
+    return mol
+
+
+def fix_valence_charge(mol: dm.Mol, inplace: bool = False) -> Optional[dm.Mol]:
+    """Fix valence issues that are due to incorrect charges.
+
+    Args:
+        mol: Input molecule with incorrect valence for some atoms
+        inplace: Whether to modify in place or make a copy.
+
+    Returns:
+        Fixed molecule via charge correction or original molecule if failed.
+    """
+
+    vm = rdMolStandardize.RDKitValidation()
+
+    # Don't fix something that is not broken
+    if len(vm.validate(mol)) > 0:
+
+        if not inplace:
+            mol = copy.copy(mol)
+
+        mol.UpdatePropertyCache(False)
+        for a in mol.GetAtoms():
+            n_electron = (
+                a.GetImplicitValence()
+                + a.GetExplicitValence()
+                - dm.PERIODIC_TABLE.GetDefaultValence(a.GetSymbol())
+            )
+            a.SetFormalCharge(n_electron)
+
+    return mol
+
+
+def incorrect_valence(a: Union[dm.Mol, Chem.rdchem.Atom], update: bool = False) -> bool:
+    """Check if an atom connection is not valid or all the atom of a molecule.
+
+    Args:
+        a: atom or molecule to check for valence issue.
+        update: Update owning molecule property cache first.
+
+    Returns:
+        Whether the input atom valence is correct.
+    """
+    if isinstance(a, dm.Mol):
+        a.UpdatePropertyCache(False)
+        vm = rdMolStandardize.RDKitValidation()
+        return len(vm.validate(a)) > 0
+
+    if update:
+        m = a.GetOwningMol()
+        m.UpdatePropertyCache(False)
+    return (a.GetImplicitValence() == 0) and (
+        a.GetExplicitValence() > max(PERIODIC_TABLE.GetValenceList(a.GetSymbol()))
+    )
+
+
+def decrease_bond(bond: Chem.rdchem.Bond) -> Optional[Union[list, Chem.rdchem.Bond]]:
+    """Remove one single bond from the input bond. Note that you should
+    first kekulize your molecules and remove non-standard bond.
+
+    Args:
+        bond: a bond.
+    """
+    if bond.GetBondType() == TRIPLE_BOND:
+        return DOUBLE_BOND
+    if bond.GetBondType() == DOUBLE_BOND:
+        return SINGLE_BOND
+    if bond.GetBondType() == SINGLE_BOND:
+        return None
+    return bond
+
+
+def fix_valence(mol, inplace: bool = False, allow_ring_break: bool = False) -> Optional[dm.Mol]:
+    """Identify and try to fix valence issues by removing any supplemental bond
+    that should not be in the graph.
+
+    Args:
+        mol: input molecule with incorrect valence for some atoms
+        inplace: Whether to modify in place or make a copy
+        allow_ring_break: Whether bond removal involving ring is allowed.
+
+    Returns:
+        Fixed potential valence issue in molecule or original molecule when nothing is broken
+        of if failed.
+    """
+    if not inplace:
+        mol = copy.copy(mol)
+
+    vm = rdMolStandardize.RDKitValidation()
+    if len(vm.validate(mol)) == 0:  # don't fix something that is not broken
+        return mol
+
+    try:
+        m = Chem.RemoveHs(  # type: ignore
+            mol,
+            implicitOnly=False,
+            updateExplicitCount=True,
+            sanitize=False,
+        )
+        m.UpdatePropertyCache(False)
+
+        # first pass using explicit false count
+        for atom in m.GetAtoms():
+            while incorrect_valence(atom) and atom.GetTotalNumHs() > 0:
+                cur_hydrogen = atom.GetTotalNumHs()
+                atom.SetNumExplicitHs(max(0, cur_hydrogen - 1))
+                atom.SetFormalCharge(max(0, atom.GetFormalCharge() - 1))
+                # atom.SetNumRadicalElectrons(0)
+            atom.UpdatePropertyCache(False)
+
+        em = Chem.RWMol(m)  # type: ignore
+        bonds = em.GetBonds()
+        bonds = [
+            bond
+            for bond in bonds
+            if any(
+                [
+                    incorrect_valence(bond.GetBeginAtom()),
+                    incorrect_valence(bond.GetEndAtom()),
+                ]
+            )
+        ]
+        for bond in bonds:
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            if incorrect_valence(a1) or incorrect_valence(a2):
+                mbond = decrease_bond(bond)
+                if allow_ring_break or (mbond or not bond.IsInRing()):
+                    em.RemoveBond(a1.GetIdx(), a2.GetIdx())
+                    if mbond is not None:
+                        em.AddBond(a1.GetIdx(), a2.GetIdx(), mbond)
+            a1.UpdatePropertyCache(False)
+            a2.UpdatePropertyCache(False)
+        m = em.GetMol()
+
+    except Exception:
+        return None
+
+    return m
+
+
+def adjust_singleton(mol: dm.Mol) -> Optional[dm.Mol]:
+    """Remove all atoms that are essentially disconnected singleton nodes in the molecular graph.
+    For example, the chlorine atom and methane fragment will be removed in Cl.[N:1]1=CC(O)=CC2CCCCC12.CC.C",
+    but not the ethane fragment.
+
+    Args:
+        mol: a molecule.
+    """
+    to_rem = []
+    em = Chem.RWMol(mol)  # type: ignore
+    for atom in mol.GetAtoms():
+        if atom.GetExplicitValence() == 0:
+            to_rem.append(atom.GetIdx())
+    to_rem.sort(reverse=True)
+    for a_idx in to_rem:
+        em.RemoveAtom(a_idx)
+    return em.GetMol()
+
+
+def remove_dummies(mol: dm.Mol, dummy: str = "*") -> Optional[dm.Mol]:
+    """Remove dummy atoms from molecules."""
+    du = dm.to_mol(dummy)
+    out = mol
+    try:
+        out = Chem.ReplaceSubstructs(mol, du, dm.to_mol("[H]"), True)[0]  # type: ignore
+        out = Chem.RemoveHs(out)  # type: ignore
+    except Exception as e:
+        out = Chem.DeleteSubstructs(mol, du)  # type: ignore
+    return out
+
+
+def fix_mol(
+    mol: dm.Mol,
+    n_iter: int = 1,
+    remove_singleton: bool = False,
+    largest_only: bool = False,
+    inplace: bool = False,
+) -> Optional[dm.Mol]:
+    """Fix error in molecule using a greedy approach.
+
+    Args:
+        mol: input molecule to fix
+        n_iter: Number of valence fix iteration to apply
+        remove_singleton: Whether `adjust_singleton` should be applied
+        largest_only: Whether only the largest fragment should be kept
+        inplace: Whether to return a copy of the mol or perform in place operation
+
+    Returns:
+        Fixed molecule.
+    """
+
+    if not inplace:
+        mol = copy.copy(mol)
+
+    m = sanitize_mol(mol) or mol  # fail back to mol when the fixer fail
+
+    if m is not None:
+        m = remove_dummies(m)
+        for _ in range(n_iter):
+            m = fix_valence(m)
+
+        if remove_singleton:
+            m = adjust_singleton(m)
+
+        if largest_only:
+            # m = max(Chem.rdmolops.GetMolFrags(m, asMols=True, sanitizeFrags=False), key=lambda m: m.GetNumAtoms())
+            m = rdMolStandardize.FragmentParent(m, skipStandardize=True)
+
+    return m
+
+
+def replace_dummies_atoms(
+    mol: dm.Mol,
+    atom: str = "C",
+    dummy: str = "*",
+    replace_all: bool = True,
+) -> Optional[dm.Mol]:
+    """Remove dummy atoms from molecules.
+
+    Args:
+        mol: molecule with dummies
+        atom: replacement atom, default is carbon
+        dummy: dummy atom representation
+        replace_all: Whether to replace all dummies
+
+    Returns:
+        mol: Molecule with dummy replaced
+    """
+    du = Chem.MolFromSmiles(dummy)  # type: ignore
+    replacement = Chem.MolFromSmiles(atom)  # type: ignore
+    out = Chem.ReplaceSubstructs(mol, du, replacement, replaceAll=replace_all)[0]  # type: ignore
+    return out
+
+
+def keep_largest_fragment(mol: dm.Mol) -> Optional[dm.Mol]:
+    """Only keep largest fragment of each molecule."""
+    return max(
+        rdmolops.GetMolFrags(mol, asMols=True),
+        default=mol,
+        key=lambda m: m.GetNumAtoms(),
+    )
+
+
+def is_transition_metal(at: Chem.rdchem.Atom) -> bool:
+    """Check if atom is a transition metal.
+
+    Args:
+        at: an atom.
+    """
+    n = at.GetAtomicNum()
+    return (n >= 22 and n <= 29) or (n >= 40 and n <= 47) or (n >= 72 and n <= 79)
+
+
+def set_dative_bonds(mol: dm.Mol, from_atoms: Tuple[int, int] = (7, 8)) -> Optional[dm.Mol]:
+    """Replaces some single bonds between metals and atoms with atomic numbers in fromAtoms
+    with dative bonds. The replacement is only done if the atom has "too many" bonds.
+
+    Arguments:
+        mol: molecule with bond to modify
+        from_atoms: List of atoms  (symbol or atomic number) to consider for bond replacement.
+            By default, only Nitrogen (7) and Oxygen (8) are considered.
+
+    Returns:
+        The modified molecule.
+    """
+    rwmol = Chem.RWMol(mol)  # type: ignore
+    rwmol.UpdatePropertyCache(strict=False)
+
+    metals = [at for at in rwmol.GetAtoms() if is_transition_metal(at)]
+    for metal in metals:
+        for nbr in metal.GetNeighbors():
+            if (nbr.GetAtomicNum() in from_atoms or nbr.GetSymbol() in from_atoms) and (
+                nbr.GetExplicitValence() > PERIODIC_TABLE.GetDefaultValence(nbr.GetAtomicNum())
+                and rwmol.GetBondBetweenAtoms(nbr.GetIdx(), metal.GetIdx()).GetBondType()
+                == SINGLE_BOND
+            ):
+                rwmol.RemoveBond(nbr.GetIdx(), metal.GetIdx())
+                rwmol.AddBond(nbr.GetIdx(), metal.GetIdx(), DATIVE_BOND)
+    return rwmol
+
+
+def set_mol_props(
+    mol: dm.Mol,
+    props: Dict[str, Any],
+    copy: bool = False,
+) -> dm.Mol:
+    """Set properties to a mol from a dict.
+
+    Args:
+        mol: the mol where to copy the props.
+        props: the props to copy.
+        copy: whether to copy the provided mol
+
+    """
+
+    if copy is True:
+        mol = dm.copy_mol(mol)
+
+    for k, v in props.items():
+        if isinstance(v, bool):
+            mol.SetBoolProp(k, v)
+        elif isinstance(v, int):
+            mol.SetIntProp(k, v)
+        elif isinstance(v, float):
+            mol.SetDoubleProp(k, v)
+        else:
+            mol.SetProp(k, str(v))
+
+    return mol
+
+
+def copy_mol_props(source: dm.Mol, destination: dm.Mol):
+    """Copy properties from one source molecule to another destination
+    molecule.
+
+    Args:
+        source: a molecule to copy from.
+        destination: a molecule to copy to.
+    """
+
+    props = source.GetPropsAsDict()
+    dm.set_mol_props(destination, props)
+
+
+def atom_indices_to_mol(mol: dm.Mol, copy: bool = False):
+    """Add the `molAtomMapNumber` property to each atoms.
+
+    Args:
+        mol: a molecule
+        copy: Whether to copy the molecule.
+    """
+
+    if copy is True:
+        mol = copy_mol(mol)
+
+    for atom in mol.GetAtoms():
+        atom.SetProp("molAtomMapNumber", str(atom.GetIdx()))
+    return mol
+
+
+def atom_list_to_bond(
+    mol: dm.Mol,
+    atom_indices: List[int],
+    bond_as_idx: bool = False,
+):
+    """Return a list of existing bond indices between a list of
+    atom indices.
+
+    Args:
+        mol: A molecule.
+        atom_indices: A list of atom indices.
+    """
+
+    # Build an atom map
+    atom_map = {}
+    submol = Chem.PathToSubmol(mol, atom_indices, useQuery=True, atomMap=atom_map)  # type: ignore
+    atom_map_reversed = {v: k for k, v in atom_map.items()}
+
+    bonds = []
+
+    for bond in submol.GetBonds():
+        a1, a2 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        ori_a1 = atom_map_reversed[a1]
+        ori_a2 = atom_map_reversed[a2]
+
+        if ori_a1 in atom_indices and ori_a2 in atom_indices:
+            ori_bond = mol.GetBondBetweenAtoms(ori_a1, ori_a2)
+            if bond_as_idx:
+                bonds.append(ori_bond.GetIdx())
+            else:
+                bonds.append(ori_bond)
+
+    return bonds
+
+
+def substructure_matching_bonds(mol: dm.Mol, query: dm.Mol, **kwargs):
+    """Perform a substructure match using `GetSubstructMatches` but instead
+    of returning only the atom indices also return the bond indices.
+
+    Args:
+        mol: A molecule.
+        query: A molecule used as a query to match against.
+        kwargs: Any other arguments to pass to `mol.GetSubstructMatches()`.
+
+    Returns:
+        atom_matches: A list of lists of atom indices.
+        bond_matches: A list of lists of bond indices.
+    """
+
+    # NOTE(hadim): If more substructure functions are added here, consider moving it to
+    # a dedicated `substructure` module.
+
+    # Set default arguments
+    kwargs.setdefault("uniquify", True)
+
+    # Get the matching atom indices
+    atom_matches = list(mol.GetSubstructMatches(query, **kwargs))
+
+    # Get the bond to highligh from the query
+    query_bond_indices = [
+        (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()) for bond in query.GetBonds()
+    ]
+
+    # Retrieve the atom indices
+    query_atom_indices = [atom.GetIdx() for i, atom in enumerate(query.GetAtoms())]
+
+    bond_matches = []
+
+    for match in atom_matches:
+
+        # Map the atom of the query to the atom of the mol matching the query
+        atom_map = dict(zip(query_atom_indices, match))
+
+        # For this match atoms we now, we use the map to retrieve the matching bonds
+        # in the mol.
+        mol_bond_indices = [(atom_map[a1], atom_map[a2]) for a1, a2 in query_bond_indices]
+
+        # Convert the bond atom indices to bond indices
+        mol_bond_indices = [mol.GetBondBetweenAtoms(a1, a2).GetIdx() for a1, a2 in mol_bond_indices]
+
+        bond_matches.append(mol_bond_indices)
+
+    return atom_matches, bond_matches
+
+
+def protect_atoms(
+    mol: dm.Mol,
+    substruct: Optional[dm.Mol] = None,
+    atoms: Union[List[int], int] = None,
+    in_place: bool = False,
+) -> dm.Mol:
+    """Protect a list of atoms or substruct in a molecule.
+
+    The _protected attributes of a molecule is used by RDKit in several functions, especially for reactions
+    where "protected" atoms are disallowed from taking part in reactions.
+
+    Args:
+        mol: input molecule to protect
+        substruct: optional substructure query to identify atoms to protect
+        atoms: optional list of atom indices to protect
+        in_place: whether to perform the protection in place or return a copy of the molecule
+    """
+    if atoms is None:
+        atoms = []
+    elif not isinstance(atoms, (tuple, list)):
+        atoms = [atoms]
+
+    # do not perform protection in place
+    if in_place:
+        mol_copy = mol
+    else:
+        mol_copy = copy_mol(mol)
+
+    if substruct is not None:
+        matches = mol_copy.GetSubstructMatches(substruct)
+        atoms.extend(itertools.chain(*matches))
+
+    for a in atoms:
+        if a is None:
+            continue
+        mol_copy.GetAtomWithIdx(a).SetProp("_protected", "1")
+
+    return mol_copy
+
+
+def add_hs(
+    mol: dm.Mol,
+    explicit_only: bool = False,
+    add_coords: bool = False,
+    only_on_atoms: List[int] = None,
+    add_residue_info: bool = False,
+    copy: bool = True,
+):
+    """Adds hydrogens to the molecule.
+
+    Args:
+        mol: a molecule.
+        explicit_only: whether to only add explicit hydrogens.
+        add_coords: whether to add 3D coordinates to the hydrogens.
+        onlyOnAtoms: a list of atoms to add hydrogens only on.
+        add_residue_info: whether to add residue information to the hydrogens.
+            Useful for PDB files.
+        copy: whether to copy the input molecule.
+    """
+
+    if copy:
+        mol = dm.copy_mol(mol)
+
+    mol = Chem.AddHs(  # type: ignore
+        mol,
+        explicitOnly=explicit_only,
+        addCoords=add_coords,
+        onlyOnAtoms=only_on_atoms,
+        addResidueInfo=add_residue_info,
+    )
+
+    return mol
+
+
+def remove_hs(
+    mol: dm.Mol,
+    implicit_only: bool = False,
+    update_explicit_count: bool = False,
+    sanitize: bool = True,
+    copy: bool = True,
+):
+    """Removes hydrogens from a molecule.
+
+    Args:
+        mol: a molecule.
+        implicit_only: whether to only remove implicit hydrogens.
+        update_explicit_count: whether to update the explicit hydrogen count.
+        sanitize: whether to sanitize the molecule after the hydrogens are removed.
+        copy: whether to copy the input molecule.
+    """
+
+    if copy:
+        mol = dm.copy_mol(mol)
+
+    mol = Chem.RemoveHs(  # type: ignore
+        mol,
+        implicitOnly=implicit_only,
+        updateExplicitCount=update_explicit_count,
+        sanitize=sanitize,
+    )
+
+    return mol
