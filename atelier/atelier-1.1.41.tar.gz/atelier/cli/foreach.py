@@ -1,0 +1,129 @@
+#!python
+# Copyright 2013-2021 Rumma & Ko Ltd
+# License: GNU Affero General Public License v3 (see file COPYING for details)
+
+import os
+import subprocess
+import argparse
+
+import rstgen
+from atelier.projects import load_projects
+# from argh import dispatch_command, arg, CommandError
+
+SHOW_DOCTREES = False  # True takes about 6 seconds on my computer
+
+
+@click.command()
+@click.argument('cmd', metavar="CMD",
+    help="The command to run on every project.")
+@click.argument('prjname')
+@click.option('--showlist/--no-showlist', default=False, help="")
+@click.option('--batch/--no-batch', default=False, help=BATCH_HELP)
+@click.option('--dev-repos', default='',
+              help="List of packages for which to install development version")
+
+@click.pass_context
+def foreach(ctx, cmd, showlist):
+    """Loop over all projects, executing the given shell command in the
+root directory of each project.  See
+https://atelier.lino-framework.org/usage.html
+
+    """
+
+
+
+@dispatch_command
+@arg('cmd',
+     nargs=argparse.REMAINDER,
+     help="The command to run on every project.")
+@arg('-l', '--list', default=False, dest='showlist',
+     help='Show list of projects.')
+@arg('-d', '--dirty', default=False, dest='dirty',
+     help='Process only projects with a dirty git status.')
+@arg('-s', '--start',
+     help='Start from that project, skip those before.')
+@arg('-a', '--after',
+     help='Start after that project, skip those before.')
+@arg('-u', '--until',
+     help='Only until that project, skip those after.')
+@arg('-v', '--voice',
+     help='Speak the result through speakers when terminated.')
+@arg('-r', '--reverse',
+     help='Loop in reverse order.')
+def main(voice=False, start=None, after=None, until=None,
+    showlist=False, dirty=False, reverse=False, *cmd):
+    """Loop over all projects, executing the given shell command in the
+root directory of each project.  See
+https://atelier.lino-framework.org/usage.html
+
+    """
+
+    projects = list(load_projects())
+    if dirty:
+        projects = filter(lambda p: p.get_status().endswith("!"), projects)
+    if reverse:
+        projects.reverse()
+    if showlist:
+        headers = [
+            'Project',
+            # 'Version',
+            'Status',
+            'URL']
+        if SHOW_DOCTREES:
+            headers.append('doctrees')
+
+        def cells(self):
+            self.load_info()
+            # config = self.inv_namespace.configuration()
+            yield self.nickname
+            # yield self.SETUP_INFO.get('version', '')
+            # yield self.main_package
+            yield self.get_status()
+            yield self.SETUP_INFO.get('url', None)
+            if SHOW_DOCTREES:
+                doc_trees = u', '.join([u"{}".format(t) for t in self.get_doc_trees()])
+                yield doc_trees
+            # yield ', '.join(config['doc_trees'])
+
+        print(rstgen.table(headers, [
+            tuple(cells(p)) for p in projects]))
+        if len(cmd) == 0:
+            return
+
+    if len(cmd) == 0:
+        raise CommandError("You must specify a command!")
+
+    def saymsg(msg):
+        if voice:
+            msg = msg.replace("'", "\'")
+            cmd = ("espeak", "'{}'".format(msg))
+            subprocess.call(cmd)
+
+    skipping = start is not None or after is not None
+    for prj in projects:
+        if cmd[0] == 'git':
+            prj.load_info()
+            if prj.config['revision_control_system'] != 'git':
+                continue
+        if start and prj.nickname == start:
+            skipping = False
+        if after and prj.nickname == after:
+            skipping = False
+            continue
+        if skipping:
+            continue
+        if until and prj.nickname == until:
+            skipping = True
+        print("==== %s ====" % prj.nickname)
+        os.chdir(prj.root_dir)
+        rv = subprocess.call(cmd, cwd=prj.root_dir)
+        if rv:
+            msg = "%s ended with error %s in project %s" % (
+                ' '.join(cmd), rv, prj.nickname)
+            saymsg(msg)
+            raise CommandError(msg)
+
+    msg = "Successfully terminated `{}` for all projects"
+    msg = msg.format(' '.join(cmd))
+    saymsg(msg)
+    print(msg)
