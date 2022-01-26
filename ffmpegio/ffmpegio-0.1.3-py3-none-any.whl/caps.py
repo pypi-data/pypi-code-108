@@ -1,0 +1,1005 @@
+# TODO add function to guess media type given extension
+
+from .ffmpeg import ffprobe, exec as ffmpeg, PIPE
+import re, fractions
+
+_ffCodecRegexp = re.compile(
+    r"([D.])([E.])([VAS])([I.])([L.])([S.])\s+([^=\s][\S]*)\s+(.*)"
+)  # g
+_ffEncodersRegexp = re.compile(r"\s+\(encoders:([^\)]+)\)")
+_ffDecodersRegexp = re.compile(r"\s+\(decoders:([^\)]+)\)")
+_coderRegexp = re.compile(
+    r"([VAS])([F.])([S.])([X.])([B.])([D.])\s+([^=\s]\S*)\s+(.*)"
+)  # g
+_formatRegexp = re.compile(r"([D ])([E ]) (\S+) +(.*)")  # g
+_filterRegexp = re.compile(
+    r"([T.])([S.])([C.])\s+(\S+)\s+(A+|V+|N|\|)->(A+|V+|N|\|)\s+(.*)"
+)  # g
+
+_cache = dict()
+
+
+def _(cap):
+    return (
+        (None, _cache[cap])
+        if (cap in _cache)
+        else (ffprobe([f"-{cap}"], stderr=None), None)
+    )
+
+
+def __(type, name):
+    return (
+        (None, _cache[type][name])
+        if (type in _cache and name in _cache[type])
+        else (ffprobe(["--help", f"{type}={name}"], stderr=None), None)
+    )
+
+
+def options(type=None, name_only=False, return_desc=False):
+    """get FFmpeg command options
+
+    :param type: specify option type to return, defaults to None
+    :type type: "per-file"|"video"|"audio"|"subtitle"|"general"|"global"|None, optional
+    :param name_only: True to only return option names, defaults to False
+    :type name_only: bool, optional
+    :param return_desc: True to also return option description, defaults to False
+    :type return_desc: bool, optional
+    :return: dict of types of options
+    :rtype: dict(dict or tuple) if type not specified
+    """
+    try:
+        opts = _cache["options"]
+    except:
+        ret = ffmpeg(
+            {"global_options": {"help": "long"}}, stdout=PIPE, encoding="utf-8"
+        )
+        lines = ret.stdout.split("\n")
+        ginds = [
+            (i + 1, l[:-1].lower())
+            for i, l in enumerate(lines)
+            if len(l) and l[0] not in "- \t" and l[-1] == ":"
+        ]
+        ginds.append((len(lines) + 1, None))
+
+        def parse_line(s):
+            m = re.match(r"\s*-(.+?) ([^ ]+?)? {2,}(.*)$", s)
+            return (m[1], m[2], m[3]) if m else None
+
+        raw_opts = (
+            (
+                l,
+                {
+                    o[0]: o[1:]
+                    for o in (parse_line(s) for s in lines[i0 : i1 - 1])
+                    if o is not None
+                },
+            )
+            for (i0, l), (i1, _) in zip(ginds[:-1], ginds[1:])
+        )
+
+        opts = {
+            "video": {},
+            "audio": {},
+            "subtitle": {},
+            "general": {},
+            "global": {"overwrite": ("bool", "[ffmpegio] combining -y/-n options")},
+        }
+        for gname, gopts in raw_opts:
+            if "video" in gname:
+                opts["video"].update(gopts)
+            elif "audio" in gname:
+                opts["audio"].update(gopts)
+            elif "subtitle" in gname:
+                opts["subtitle"].update(gopts)
+            elif "per-file" in gname:
+                opts["general"].update(gopts)
+            else:
+                opts["global"].update(gopts)
+        _cache["options"] = opts
+
+    if type == "per-file":
+        opts = {
+            "per-file": {
+                k: v for t, o in opts.items() if t != "global" for k, v in o.items()
+            }
+        }
+
+    return (
+        ({t: tuple(o) for t, o in opts.items()} if type is None else tuple(opts[type]))
+        if name_only
+        else (
+            (
+                opts
+                if return_desc
+                else {t: {k: v[0] for k, v in o.items()} for t, o in opts.items()}
+            )
+            if type is None
+            else (
+                opts[type] if return_desc else {k: v[0] for k, v in opts[type].items()}
+            )
+        )
+    )
+
+
+def filters(type=None):
+    """get FFmpeg filters
+
+    :param type: specify input or output stream type, defaults to None
+    :type type: 'audio'|'video'|'dynamic', optional
+    :return: dict of filters
+    :rtype: dict(key=str, value=dict)
+
+    Each key of the returned dict is a name of a filter and its value is a dict
+    with the following items:
+
+    ================  ========  ===============================================
+    Key               type      description
+    ================  ========  ===============================================
+    description       str       Short description of the filter
+    input             str       Input stream type: 'audio'|'video'|'dynamic'
+    num_inputs        int|None  Number of inputs or None if 'dynamic'
+    output            str       Output stream type: 'audio'|'video'|'dynamic'
+    num_outputs       int|None  Number of outputs or None if 'dynamic'
+    timeline_support  bool      True if supports timeline editing
+    slice_threading   bool      True if supports threading
+    command_support   bool      True if supports command input from stdin
+    ================  ========  ===============================================
+    """
+
+    stdout, data = _("filters")
+    if not data:
+        types = {"A": "audio", "V": "video", "N": "dynamic", "|": "none"}
+
+        data = {}
+        for match in _filterRegexp.finditer(stdout):
+            intype = types[match[5][0]]
+            outtype = types[match[6][0]]
+            data[match[4]] = {
+                "description": match[7],
+                "input": intype,
+                "num_inputs": len(match[5]) if intype != "dynamic" else None,
+                "output": outtype,
+                "num_outputs": len(match[6]) if outtype != "dynamic" else None,
+                "timeline_support": match[1] == "T",
+                "slice_threading": match[2] == "S",
+                "command_support": match[3] == "C",
+            }
+
+        _cache["filters"] = data
+
+    if type is not None:
+        data = {
+            k: v for k, v in data.items() if v["input"] == type or v["output"] == type
+        }
+
+    return data
+
+
+def codecs(type=None, stream_type=None):
+    """get FFmpeg codecs
+
+    :param type: Specify to list only decoder or encoder, defaults to None
+    :type type: 'decoder'|'encoder', optional
+    :param stream_type: Specify to stream type, defaults to None
+    :type stream_type: 'audio'|'video'|'subtitle', optional
+    :return: summary of FFmpeg codecs
+    :rtype: dict
+
+    Each key of the returned dict is a name of a codec and its value is a dict
+    with the following items:
+
+    ================  =========  ===============================================
+    Key               type       description
+    ================  =========  ===============================================
+    type              str        Stream type: 'audio'|'video'|'subtitle'
+    description       str        Short description of the codec
+    can_decode        bool       True if FFmpeg can decode
+    decoders          list(str)  List of compatible decoders
+    can_encode        bool       True if FFmpeg can encode
+    encoders          list(str)  List of compatible encoders
+    intra_frame_only  bool       True if codec only uses intra-frame coding
+    is_lossy          bool       True if codec can do lossy compression
+    is_lossless       bool       True if codec can do lossless compression
+    ================  =========  ===============================================
+    """
+    stdout, data = _("codecs")
+    if not data:
+        data = {}
+        for match in _ffCodecRegexp.finditer(stdout):
+
+            stype = {"V": "video", "A": "audio", "S": "subtitle"}[match[3]]
+
+            desc = match[8]
+            encoders = _ffEncodersRegexp.match(desc)
+            if encoders:
+                desc = desc.slice(0, encoders.index) + desc.slice(
+                    encoders.index + encoders[0].length
+                )
+            encoders = encoders[1].trim().split(" ") if encoders else None
+
+            decoders = _ffDecodersRegexp.match(desc)
+            if decoders:
+                desc = desc.slice(0, decoders.index) + desc.slice(
+                    decoders.index + decoders[0].length
+                )
+            decoders = decoders[1].trim().split(" ") if decoders else None
+
+            data[match[7]] = {
+                "type": stype,
+                "description": desc,
+                "can_decode": match[1] == "D",
+                "decoders": decoders,
+                "can_encode": match[2] == "E",
+                "encoders": encoders,
+                "intra_frame_only": match[4] == "I",
+                "is_lossy": match[5] == "L",
+                "is_lossless": match[6] == "S",
+            }
+            if not encoders:
+                del data[match[7]]["encoders"]
+            if not decoders:
+                del data[match[7]]["decoders"]
+
+        _cache["codecs"] = data
+
+    # return all if no argument specified
+    if type is None and stream_type is None:
+        return data
+
+    decoder = type is not None and type == "decoder"
+    encoder = type is not None and type == "encoder"
+    stype = stream_type is not None
+
+    def pick(entry):
+        return (
+            (decoder and entry["can_decode"]) or (encoder and entry["can_encode"])
+        ) and (stype and stream_type == entry["type"])
+
+    return {k: v for k, v in data.items() if pick(v)}
+
+def encoders(type=None):
+    """get summary of FFmpeg encoders
+
+    :param type: specify stream type, defaults to None
+    :type type: 'audio'|'video'|'subtitle', optional
+    :return: list of encoders
+    :rtype: dict
+
+    Each key of the returned dict is a name of a decoder or encoder and its
+    value is a dict with the following items:
+
+    ================  ====  ===============================================
+    Key               type  description
+    ================  ====  ===============================================
+    type              str   Stream type: 'audio'|'video'|'subtitle'
+    description       str   Short description of the coder
+    frame_mt          bool  True if employs frame-level multithreading
+    slice_mt          bool  True if employs slice-level multithreading
+    experimental      bool  True if experimental encoder
+    draw_horiz_band   bool  True if supports draw_horiz_band
+    directRendering   bool  True if supports direct encoding method 1
+    ================  ====  ===============================================
+    """
+    return _coders('encoders',type)
+
+def decoders(type=None):
+    """get summary of FFmpeg decoders
+
+    :param stream_type: specify stream type, defaults to None
+    :type stream_type: 'audio'|'video'|'subtitle', optional
+    :return: list of decoders or encoders
+    :rtype: dict
+
+
+    Each key of the returned dict is a name of a decoder and its
+    value is a dict with the following items:
+
+    ================  ====  ===============================================
+    Key               type  description
+    ================  ====  ===============================================
+    type              str   Stream type: 'audio'|'video'|'subtitle'
+    description       str   Short description of the coder
+    frame_mt          bool  True if employs frame-level multithreading
+    slice_mt          bool  True if employs slice-level multithreading
+    experimental      bool  True if experimental encoder
+    draw_horiz_band   bool  True if supports draw_horiz_band
+    directRendering   bool  True if supports direct encoding method 1
+    ================  ====  ===============================================
+    """
+    return _coders('decoders',type)
+
+def _coders(type, stream_type=None):
+
+    # reversed fftools/comdutils.c show_encoders()
+
+    stdout, data = _(type)
+    if not data:
+        data = {}
+        for match in _coderRegexp.finditer(stdout):
+            stype = {"V": "video", "A": "audio", "S": "subtitle"}[match[1]]
+            data[match[7]] = {
+                "type": stype,
+                "description": match[8],
+                "frame_mt": match[2] == "F",
+                "slice_mt": match[3] == "S",
+                "experimental": match[4] == "X",
+                "draw_horiz_band": match[5] == "B",
+                "directRendering": match[6] == "D",
+            }
+
+        _cache[type] = data
+
+    if stream_type is not None:
+        data = {k: v for k, v in data.items() if v["type"] == stream_type}
+
+    return data
+
+
+#   / **
+#    * reversed fftools/comdutils.c show_formats()
+#    * /
+
+
+def formats():
+    """get FFmpeg formats
+
+    :return: list of formats
+    :rtype: dict
+
+
+    Each key of the returned dict is a name of a format and its value is a dict
+    with the following items:
+
+    ================  ====  ===============================================
+    Key               type  description
+    ================  ====  ===============================================
+    description       str   Short description of the format
+    can_demux         bool  True if supports inputs of this format
+    can_mux           bool  True if support outputs of this format
+    ================  ====  ===============================================
+    """
+    return _getFormats("formats", True)
+
+
+def devices():
+    """get FFmpeg devices
+
+    :return: list of devices
+    :rtype: dict
+
+
+    Each key of the returned dict is a name of a device and its value is a dict
+    with the following items:
+
+    ================  ====  ===============================================
+    Key               type  description
+    ================  ====  ===============================================
+    description       str   Short description of the device
+    can_demux         bool  True if supports inputs of this format
+    can_mux           bool  True if support outputs of this format
+    ================  ====  ===============================================
+    """
+    return _getFormats("devices", True)
+
+
+def muxers():
+    """get FFmpeg muxers
+
+    :return: list of muxers
+    :rtype: dict
+
+
+    Each key of the returned dict is a name of a muxer and its value is a dict
+    with the following items:
+
+    ================  ====  ===============================================
+    Key               type  description
+    ================  ====  ===============================================
+    description       str   Short description of the muxer
+    ================  ====  ===============================================
+    """
+    return _getFormats("muxers", False)
+
+
+def demuxers():
+    """get FFmpeg demuxers
+
+    :return: list of demuxers
+    :rtype: dict
+
+
+    Each key of the returned dict is a name of a demuxer and its value is a dict
+    with the following items:
+
+    ================  ====  ===============================================
+    Key               type  description
+    ================  ====  ===============================================
+    description       str   Short description of the demuxer
+    ================  ====  ===============================================
+    """
+    return _getFormats("demuxers", False)
+
+
+def _getFormats(type, doCan):
+    stdout, data = _(type)
+    if data:
+        return data
+
+    data = {}
+    for match in _formatRegexp.finditer(stdout):
+        for format in match[3].split(","):
+            if not (format in data):
+                data[format] = {"description": match[4]}
+            if doCan:
+                data[format]["can_demux"] = match[1] == "D"
+                data[format]["can_mux"] = match[2] == "E"
+
+    _cache[type] = data
+    return data
+
+
+#   // reversed fftools/comdutils.c show_bsfs()
+
+
+def bsfilters():
+    """get list of FFmpeg bitstream filters
+
+    :return: list of bistream filters
+    :rtype: list(str)
+    """
+    stdout, data = _("bsfs")
+    if data:
+        return data
+
+    m = re.match(r"\s*Bitstream filters:\s+([\s\S]+)\s*", stdout)
+    _cache["bsfs"] = re.split(r"\s*\n\s*", m[1].strip())
+    return _cache["bsfs"]
+
+
+#   // reversed fftools/comdutils.c show_protocols()
+
+
+def protocols():
+    """get list of supported protocols
+
+    :return: list of protocols
+    :rtype: dict
+
+    Returned dict has 'input' and 'output' keys and each contains a list of
+    supported protocol names.
+
+    """
+    stdout, data = _("protocols")
+    if data:
+        return data
+    match = re.search(r"Input:\s+([\s\S]+)Output:\s+([\s\S]+)", stdout)
+    _cache["protocols"] = dict(
+        input=re.split(r"\s*\n\s*", match[1]), output=re.split(r"\s*\n\s*", match[1])
+    )
+    return _cache["protocols"]
+
+
+#   // according to fftools/comdutils.c show_pix_fmts()
+
+
+def pix_fmts():
+    """get supported pixel formats
+
+    :return: list of supported pixel formats
+    :rtype: dict
+
+    Each key of the returned dict is a name of a pix_fmt and its value is a dict
+    with the following items:
+
+    ==============  ====  ===============================================
+    Key             type  description
+    ==============  ====  ===============================================
+    nb_components   int   Number of color components
+    bits_per_pixel  int   Number of bits per pixel
+    input           bool  True if can be used as an input option
+    output          bool  True if can be used as an output option
+    hw_accel        bool  True if supported by hardware accelerators
+    paletted        bool  True if uses paletted colors
+    bitstream       bool  True if can be used with bistreams
+    ==============  ====  ===============================================
+    """
+    stdout, data = _("pix_fmts")
+
+    if data:
+        return data
+
+    data = {
+        match[6]: dict(
+            nb_components=int(match[7]),
+            bits_per_pixel=int(match[8]),
+            input=match[1] == "I",
+            output=match[2] == "O",
+            hw_accel=match[3] == "H",
+            paletted=match[4] == "P",
+            bitstream=match[5] == "B",
+        )
+        for match in re.finditer(
+            r"([I.])([O.])([H.])([P.])([B.])\s+(\S+)\s+(\d+)\s+(\d+)", stdout
+        )
+    }
+
+    _cache["pix_fmts"] = data
+    return data
+
+
+def sample_fmts():
+    """get supported audio sample formats
+
+    :return: list of supported audio sample formats
+    :rtype: dict
+
+    Each key of the returned dict is a name of a sample_fmt and its value
+    is the number of bits per sample.
+    """
+
+    #   // according to fftools/comdutils.c show_sample_fmts()
+    stdout, data = _("sample_fmts")
+    if not data:
+        _cache["sample_fmts"] = data = {
+            match[1]: int(match[2]) for match in re.finditer(r"(\S+)\s+(\d+)", stdout)
+        }
+    return data
+
+
+def layouts():
+    """get supported audio channel layouts
+
+    :return: list of supported audio channel layouts
+    :rtype: dict
+
+    Returned dict has two keys "channels" and "layouts". The value of "channels"
+    is a dict of possible channel names as keys and their descriptions as values.
+    The value of "layouts" is also a dict, which keys specifies the names and
+    their value strs indicate the combinations of channels (their names are
+    "+"ed).
+    """
+
+    #   // according to fftools/comdutils.c show_layouts()
+    stdout, data = _("layouts")
+    if data:
+        return data
+
+    match = re.match(
+        r"\s*Individual channels:\s+NAME\s+DESCRIPTION\s+(\S[\s\S]+)Standard channel layouts:\s+NAME\s+DECOMPOSITION\s+(\S[\s\S]+)",
+        stdout,
+    )
+    data = dict(
+        channels={
+            m[1]: m[2] for m in re.finditer(r"(\S+)\s+\s([\s\S]+?)\s*\n", match[1])
+        },
+        layouts={
+            m[1]: m[2] for m in re.finditer(r"(\S+)\s+(\S[\s\S]+?)\s*\n", match[2])
+        },
+    )
+
+    _cache["layouts"] = data
+    return data
+
+
+def colors():
+    """get recognized color names
+
+    :return: list of color names
+    :rtype: dict
+
+    The keys of the returned dict are the name of the colors and their values
+    are the RGB hex strs.
+    """
+
+    #   // according to fftools/comdutils.c show_colors()
+    stdout, data = _("colors")
+    if data:
+        return data
+
+    data = {
+        match[1]: match[2]
+        for match in re.finditer(r"(\S+)\s+(\#[0-9a-f]{6})\s*?\n", stdout)
+    }
+
+    _cache["colors"] = data
+    return data
+
+
+def demuxer_info(name):
+    """get detailed info of a media demuxer
+
+    :return: list of features
+    :rtype: dict
+
+    The returned dict has following entries:
+
+    ==============  =========  ================================================
+    Key             type       description
+    ==============  =========  ================================================
+    names           list(str)  List of compatible short names
+    long_name       str        Common long name
+    extensions      list(str)  List of associated common extensions (w/out '.')
+    options         str        Unparsed string, listing supported options
+    ==============  =========  ================================================
+    """
+
+    #   // according to fftools/comdutils.c show_help_demuxer()
+    stdout, data = __("demuxer", name)
+    if data:
+        return data
+
+    m = re.match(
+        r"Demuxer (\S+) \[([^\]]+)\]:\s*?\n(?:    Common extensions: ([^.]+)\.\s*\n)?([\s\S]*)",
+        stdout,
+    )
+
+    data = dict(
+        names=m[1].split(","),
+        long_name=m[2],
+        extensions=m[3].split(",") if m[3] else [],
+        options=m[4],
+    )
+
+    if not "demuxer" in _cache:
+        _cache["demuxer"] = {}
+    _cache["demuxer"][name] = data
+    return data
+
+
+def muxer_info(name):
+    """get detailed info of a media muxer
+
+    :return: list of features
+    :rtype: dict
+
+    The returned dict has following entries:
+
+    ===============  =========  ================================================
+    Key              type       description
+    ===============  =========  ================================================
+    names            list(str)  List of compatible short names
+    long_name        str        Common long name
+    extensions       list(str)  List of associated common extensions (w/out '.')
+    mime_types       list(str)  List of associated MIME types
+    video_codecs     list(str)  List of supported video codecs
+    audio_codecs     list(str)  List of supported audio codecs
+    subtitle_codecs  list(str)  List of supported subtitle codecs
+    options          str        Unparsed string, listing supported options
+    ===============  =========  ================================================
+    """
+
+    #   // according to fftools/comdutils.c show_help_muxer()
+
+    stdout, data = __("muxer", name)
+    if data:
+        return data
+
+    m = re.match(
+        r"Muxer (\S+) \[([^\]]+)\]:\s*?\n(?:    Common extensions: ([^.]+)\.\s*?\n)?(?:    Mime type: ([^.]+)\.\s*?\n)?(?:    Default video codec: ([^.]+)\.\s*?\n)?(?:    Default audio codec: ([^.]+)\.\s*?\n)?(?:    Default subtitle codec: ([^.]+).\s*?\n)?([\s\S]*)",
+        stdout,
+    )
+
+    data = {
+        "names": m[1].split(","),
+        "long_name": m[2],
+        "extensions": m[3].split(",") if m[3] else [],
+        "mime_types": m[4].split(",") if m[4] else [],
+        "video_codecs": m[5].split(",") if m[5] else [],
+        "audio_codecs": m[6].split(",") if m[6] else [],
+        "subtitle_codecs": m[7].split(",") if m[7] else [],
+        "options": m[8],
+    }
+    if not "muxer" in _cache:
+        _cache["muxer"] = {}
+    _cache["muxer"][name] = data
+    return data
+
+
+def encoder_info(name):
+    """get detailed info of an encoder
+
+    :return: list of features
+    :rtype: dict
+
+    The returned dict has following entries:
+
+    ======================  ==============  ================================================
+    Key                     type            description
+    ======================  ==============  ================================================
+    name                    list(str)       Short names
+    long_name               str             Long name
+    capabilities            list(str)       List of supported capabilities
+    threading               list(str)       List of threading capabilities
+    supported_hwdevices     list(str)       List of supported hardware accelerators
+    supported_framerates    list(Fraction)  List of supported video frame rates
+    supported_pix_fmts      list(str)       List of supported video pixel formats
+    supported_sample_rates  list(int)       List of supported audio sample rates
+    supported_sample_fmts   list(str)       List of supported audio sample formats
+    supported_layouts       list(str)       List of supported audio channel layouts
+    options                 str             Unparsed string, listing supported options
+    ======================  ==============  ================================================
+    """
+    return _getCodecInfo(name, True)
+
+
+def decoder_info(name):
+    """get detailed info of a decoder
+
+    :return: list of features
+    :rtype: dict
+
+    The returned dict has following entries:
+
+    ======================  ==============  ================================================
+    Key                     type            description
+    ======================  ==============  ================================================
+    name                    list(str)       Short names
+    long_name               str             Long name
+    capabilities            list(str)       List of supported capabilities
+    threading               list(str)       List of threading capabilities
+    supported_hwdevices     list(str)       List of supported hardware accelerators
+    supported_framerates    list(Fraction)  List of supported video frame rates
+    supported_pix_fmts      list(str)       List of supported video pixel formats
+    supported_sample_rates  list(int)       List of supported audio sample rates
+    supported_sample_fmts   list(str)       List of supported audio sample formats
+    supported_layouts       list(str)       List of supported audio channel layouts
+    options                 str             Unparsed string, listing supported options
+    ======================  ==============  ================================================
+    """
+    return _getCodecInfo(name, False)
+
+
+_re_layouts = re.compile(
+    re.sub(r"([().])", r"\\\1", "|".join(layouts()["layouts"]))
+    + r"|\d+ channels \(.+?\)"
+)
+
+
+def _getCodecInfo(name, encoder):
+    #   // according to fftools/comdutils.c show_help_codec()
+    stdout, data = __("encoder" if encoder else "decoder", name)
+    if data:
+        return data
+
+    type = "Encoder" if encoder else "Decoder"
+    m = re.search(
+        type
+        + r" (\S+) \[([^\]]*)\]:\s*?\n"
+        + r"    General capabilities: ([^\r\n]+?)\s*?\n"
+        + r"(?:    Threading capabilities: ([^\r\n]+?)\s*?\n)?"
+        + r"(?:    Supported hardware devices: ([^\r\n]*?)\s*?\n)?"
+        + r"(?:    Supported framerates: ([^\r\n]+?)\s*?\n)?"
+        + r"(?:    Supported pixel formats: ([^\r\n]+?)\s*?\n)?"
+        + r"(?:    Supported sample rates: ([^\r\n]+?)\s*?\n)?"
+        + r"(?:    Supported sample formats: ([^\r\n]+?)\s*?\n)?"
+        + r"(?:    Supported channel layouts: ([^\r\n]+?)\s*?\n)?"
+        + r"([\s\S]*)",
+        stdout,
+    )
+
+    def resolveFs(s):
+        m = re.match(r"(\d+)\/(\d+)", s)
+        return fractions.Fraction(int(m[1]),int(m[2]))
+
+    data = {
+        "name": m[1],
+        "long_name": m[2],
+        "capabilities": m[3].split(" ") if m[3] and m[3] != "none" else [],
+        "threading": m[4].split(" and ") if m[4] and m[4] != "none" else [],
+        "supported_hwdevices": m[5].split(" ") if m[5] else [],
+        "supported_framerates": [resolveFs(s) for s in m[6].split(" ")] if m[6] else [],
+        "supported_pix_fmts": m[7].split(" ") if m[7] else [],
+        "supported_sample_rates": [int(v) for v in m[8].split(" ")] if m[8] else [],
+        "supported_sample_fmts": m[9].split(" ") if m[9] else [],
+        "supported_layouts": _re_layouts.findall(m[10]) if m[10] else [],
+        "options": m[11],
+    }
+
+    if not "muxer" in _cache:
+        _cache["muxer"] = {}
+    _cache["muxer"][name] = data
+    return data
+
+
+def filter_info(name):
+    """get detailed info of a filter
+
+    :return: list of features
+    :rtype: dict
+
+    The returned dict has following entries:
+
+    ===========  ==============  ================================================
+    Key          type            description
+    ===========  ==============  ================================================
+    name         str             Name
+    description  str             Description
+    threading    list(str)       List of threading capabilities
+    inputs       list(dict)|str  List of input pads or 'dynamic' if variable
+    outputs      list(dict)|str  List of output pads or 'dynamic' if variable
+    options      str             Unparsed string, listing supported options
+    ===========  ==============  ================================================
+
+    The dict iterms of 'inputs' and 'outputs' entries has two keys: 'name' and 'type'
+    defining the pad name and pad stream type ('audio' or 'video')
+
+    """
+
+    #   // according to fftools/comdutils.c show_help_filter()
+    stdout, data = __("filter", name)
+    if data:
+        return data
+
+    m = re.match(
+        r"Filter (\S+)\s*?\n"
+        r"(?:  (.+?)\s*?\n)?"
+        r"(?:    (slice threading supported)\s*?\n)?"
+        r"    Inputs:\s*?\n([\s\S]*?)(?=    Outputs)"
+        r"    Outputs:\s*?\n([\s\S]*?\s*?\n)(?!S)"
+        r"([\s\S]*)",
+        stdout,
+    )
+
+    data = {
+        "name": m[1],
+        "description": m[2],
+        "threading": ["slice"] if m[3] else [],
+        "inputs": _getFilterPortInfo(m[4]),
+        "outputs": _getFilterPortInfo(m[5]),
+        "options": m[6],
+    }
+
+    if not "filter" in _cache:
+        _cache["filter"] = {}
+    _cache["filter"][name] = data
+    return data
+
+
+def bsfilter_info(name):
+    """get detailed info of a bitstream filter
+
+    :return: list of features
+    :rtype: dict
+
+    The returned dict has following entries:
+
+    ================  ==============  ================================================
+    Key               type            description
+    ================  ==============  ================================================
+    name              str             Name
+    supported_codecs  str             List of supported codecs
+    options           str             Unparsed string, listing supported options
+    ================  ==============  ================================================
+
+    """
+
+    #   // according to fftools/comdutils.c show_help_bsf()
+    stdout, data = __("bsf", name)
+    if data:
+        return data
+
+    m = re.match(
+        r"Bit stream filter (\S+)\s*?\n"
+        r"(?:    Supported codecs: ([^\r\n]+?)\s*?\n)?"
+        r"([\s\S]*)",
+        stdout,
+    )
+
+    if stdout.startswith("Unknown"):
+        raise Exception(stdout)
+
+    data = {
+        "name": m[1],
+        "supported_codecs": m[2].split(" ") if m[2] else [],
+        "options": m[3],
+    }
+    if not "filter" in _cache:
+        _cache["filter"] = {}
+    _cache["filter"][name] = data
+    return data
+
+
+def _getFilterPortInfo(str):
+    if str.startswith("        none"):
+        return None
+    if str.startswith("        dynamic"):
+        return "dynamic"
+
+    matches = re.finditer(r"       #\d+: (\S+)(?= \() \((\S+)\)\s*?\n", str)
+    if not matches:
+        raise Exception("Failed to parse filter port info: %s" % str)
+    return [{"name": m[1], "type": m[2]} for m in matches]
+
+#:dict: list of video size presets with their sizes
+video_size_presets = {
+    "ntsc": (720, 480),
+    "pal": (720, 576),
+    "qntsc": (352, 240),
+    "qpal": (352, 288),
+    "sntsc": (640, 480),
+    "spal": (768, 576),
+    "film": (352, 240),
+    "ntsc-film": (352, 240),
+    "sqcif": (128, 96),
+    "qcif": (176, 144),
+    "cif": (352, 288),
+    "4cif": (704, 576),
+    "16cif": (1408, 1152),
+    "qqvga": (160, 120),
+    "qvga": (320, 240),
+    "vga": (640, 480),
+    "svga": (800, 600),
+    "xga": (1024, 768),
+    "uxga": (1600, 1200),
+    "qxga": (2048, 1536),
+    "sxga": (1280, 1024),
+    "qsxga": (2560, 2048),
+    "hsxga": (5120, 4096),
+    "wvga": (852, 480),
+    "wxga": (1366, 768),
+    "wsxga": (1600, 1024),
+    "wuxga": (1920, 1200),
+    "woxga": (2560, 1600),
+    "wqsxga": (3200, 2048),
+    "wquxga": (3840, 2400),
+    "whsxga": (6400, 4096),
+    "whuxga": (7680, 4800),
+    "cga": (320, 200),
+    "ega": (640, 350),
+    "hd480": (852, 480),
+    "hd720": (1280, 720),
+    "hd1080": (1920, 1080),
+    "2k": (2048, 1080),
+    "2kflat": (1998, 1080),
+    "2kscope": (2048, 858),
+    "4k": (4096, 2160),
+    "4kflat": (3996, 2160),
+    "4kscope": (4096, 1716),
+    "nhd": (640, 360),
+    "hqvga": (240, 160),
+    "wqvga": (400, 240),
+    "fwqvga": (432, 240),
+    "hvga": (480, 320),
+    "qhd": (960, 540),
+    "2kdci": (2048, 1080),
+    "4kdci": (4096, 2160),
+    "uhd2160": (3840, 2160),
+    "uhd4320": (7680, 4320),
+}
+
+#:dict: list of video frame rate presets with their rates
+frame_rate_presets = {
+    "ntsc": fractions.Fraction(30000, 1001),
+    "pal": fractions.Fraction(25, 1),
+    "qntsc": fractions.Fraction(30000, 1001),
+    "qpal": fractions.Fraction(25, 1),
+    "sntsc": fractions.Fraction(30000, 1001),
+    "spal": fractions.Fraction(25, 1),
+    "film": fractions.Fraction(24, 1),
+    "ntsc-film": fractions.Fraction(24000, 1001),
+}
+
+__all__ = [
+    "options",
+    "filters",
+    "codecs",
+    "coders",
+    "formats",
+    "devices",
+    "muxers",
+    "demuxers",
+    "bsfilters",
+    "protocols",
+    "pix_fmts",
+    "sample_fmts",
+    "layouts",
+    "colors",
+    "demuxer_info",
+    "muxer_info",
+    "encoder_info",
+    "decoder_info",
+    "filter_info",
+    "bsfilter_info",
+    "frame_rate_presets",
+    "video_size_presets",
+]
