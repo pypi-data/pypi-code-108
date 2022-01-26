@@ -1,0 +1,2 @@
+SUCCESS_URL_HEADER = 'SuccessUrl'
+FAIL_URL_HEADER = 'FailUrl'
