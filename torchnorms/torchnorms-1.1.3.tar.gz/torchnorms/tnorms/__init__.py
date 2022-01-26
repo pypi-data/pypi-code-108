@@ -1,0 +1,11 @@
+import torchnorms.tnorms.base
+import torchnorms.tnorms.aa
+import torchnorms.tnorms.additive_generator
+import torchnorms.tnorms.classic
+import torchnorms.tnorms.dombi
+import torchnorms.tnorms.dubois
+import torchnorms.tnorms.hamacher
+import torchnorms.tnorms.ss
+import torchnorms.tnorms.weber
+import torchnorms.tnorms.yager
+import torchnorms.tnorms.frank
