@@ -1,0 +1,2 @@
+class UniError(Exception):
+    pass
