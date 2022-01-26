@@ -1,0 +1,1 @@
+import galleries_qt.parser_widgets
