@@ -1,0 +1,5 @@
+# Data file for `burglar_rec.py'
+
+I = {"camera": [15, 2], "necklace": [100, 20], "vase": [90, 20],
+     "picture": [60, 30], "tv": [40, 40], "video": [15, 30],
+     "chest": [10, 60], "brick": [1, 10]}
