@@ -1,0 +1,2 @@
+class SheetEndException(EOFError):
+    pass
