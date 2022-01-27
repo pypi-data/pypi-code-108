@@ -1,0 +1,72 @@
+from colorama import Fore, init
+import time
+import os
+init(True)
+
+
+def loading_bar(text: str='', items: int=0, sleep: float=0.01, color: str='cyan', rounds: int=2, function: object=None, *args, **kwargs) -> None:
+    """这是loading_bar函数，为您提供了一个炫酷加载进度条。预览效果如下：
+
+       正在加载中......35%[70/200]
+
+       text：您希望在加载时显示的提示语；
+
+       items：您希望加载的次数；
+
+       sleep：您希望每次加载后等待的时间；
+
+       color：您希望进度条显示的颜色。可能的值为：
+
+           default（系统默认）
+
+           black（黑色）
+
+           white（白色）
+
+           red（红色）
+
+           green（绿色）
+
+           yellow（黄色）
+
+           blue（蓝色）
+
+           pink（梅红色）
+
+           cyan（浅蓝色）
+
+       rounds：百分数现实的精度；
+
+       function：您希望在每次加载时执行的函数；
+
+       args和kwargs：您希望传递给函数的参数。"""
+
+    if color == 'default':
+        color = Fore.RESET
+    elif color == 'black':
+        color = Fore.BLACK
+    elif color == 'white':
+        color = Fore.WHITE
+    elif color == 'red':
+        color = Fore.RED
+    elif color == 'green':
+        color = Fore.RESET
+    elif color == 'yellow':
+        color = Fore.YELLOW
+    elif color == 'blue':
+        color = Fore.BLUE
+    elif color == 'pink':
+        color = Fore.MAGENTA
+    elif color == 'cyan':
+        color = Fore.CYAN
+    else:
+        color = ''
+    
+    for item in range(1, items+1):
+        if function:
+            function(*args, **kwargs)
+        os.system('clear')
+        per = str(round((item/items)*100, rounds)) + '%'
+        print(f'{text}{color}{per}[{item}/{items}]')
+        time.sleep(sleep)
+    os.system('clear')
