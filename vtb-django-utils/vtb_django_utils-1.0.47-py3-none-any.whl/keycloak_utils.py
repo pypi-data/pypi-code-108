@@ -1,0 +1,3 @@
+from vtb_http_interaction.http_utils import make_environ_keycloak_config
+
+keycloak_config = make_environ_keycloak_config()
