@@ -1,0 +1,3 @@
+class JobMetadata(object):
+
+    pass
