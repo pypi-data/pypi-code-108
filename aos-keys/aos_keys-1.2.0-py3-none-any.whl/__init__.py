@@ -1,0 +1,15 @@
+#
+#  Copyright (c) 2018-2021 Renesas Inc.
+#  Copyright (c) 2018-2021 EPAM Systems Inc.
+#
+
+__version__ = '1.2.0'
+
+from pathlib import Path
+
+DEFAULT_OEM_FILE_NAME = "aos-user-oem.p12"
+DEFAULT_SP_FILE_NAME = "aos-user-sp.p12"
+DEFAULT_CREDENTIALS_PATH = Path.home() / '.aos' / 'security'
+DEFAULT_CREDENTIALS_FOLDER = str(DEFAULT_CREDENTIALS_PATH)
+DEFAULT_OEM_PATH = str(DEFAULT_CREDENTIALS_PATH / DEFAULT_OEM_FILE_NAME)
+DEFAULT_SP_PATH = str(DEFAULT_CREDENTIALS_PATH / DEFAULT_SP_FILE_NAME)
