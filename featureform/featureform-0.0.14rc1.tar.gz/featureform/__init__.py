@@ -1,0 +1,1 @@
+from featureform.embeddinghub import EmbeddingHubClient
