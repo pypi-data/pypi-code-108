@@ -1,0 +1,981 @@
+# This file is part of Xpra.
+# Copyright (C) 2008, 2009 Nathaniel Smith <njs@pobox.com>
+# Copyright (C) 2013-2021 Antoine Martin <antoine@xpra.org>
+# Xpra is released under the terms of the GNU GPL v2, or, at your option, any
+# later version. See the file COPYING for details.
+
+import os
+import re
+import sys
+import binascii
+import traceback
+import threading
+from itertools import chain
+
+
+XPRA_APP_ID = 0
+
+XPRA_GUID1 = 0x67b3efa2
+XPRA_GUID2 = 0xe470
+XPRA_GUID3 = 0x4a5f
+XPRA_GUID4 = (0xb6, 0x53, 0x6f, 0x6f, 0x98, 0xfe, 0x60, 0x81)
+XPRA_GUID_STR = "67B3EFA2-E470-4A5F-B653-6F6F98FE6081"
+XPRA_GUID_BYTES = binascii.unhexlify(XPRA_GUID_STR.replace("-",""))
+
+
+XPRA_NOTIFICATIONS_OFFSET = 2**24
+XPRA_BANDWIDTH_NOTIFICATION_ID  = XPRA_NOTIFICATIONS_OFFSET+1
+XPRA_IDLE_NOTIFICATION_ID       = XPRA_NOTIFICATIONS_OFFSET+2
+XPRA_WEBCAM_NOTIFICATION_ID     = XPRA_NOTIFICATIONS_OFFSET+3
+XPRA_AUDIO_NOTIFICATION_ID      = XPRA_NOTIFICATIONS_OFFSET+4
+XPRA_OPENGL_NOTIFICATION_ID     = XPRA_NOTIFICATIONS_OFFSET+5
+XPRA_SCALING_NOTIFICATION_ID    = XPRA_NOTIFICATIONS_OFFSET+6
+XPRA_NEW_USER_NOTIFICATION_ID   = XPRA_NOTIFICATIONS_OFFSET+7
+XPRA_CLIPBOARD_NOTIFICATION_ID  = XPRA_NOTIFICATIONS_OFFSET+8
+XPRA_FAILURE_NOTIFICATION_ID    = XPRA_NOTIFICATIONS_OFFSET+9
+XPRA_DPI_NOTIFICATION_ID        = XPRA_NOTIFICATIONS_OFFSET+10
+XPRA_DISCONNECT_NOTIFICATION_ID = XPRA_NOTIFICATIONS_OFFSET+11
+XPRA_DISPLAY_NOTIFICATION_ID    = XPRA_NOTIFICATIONS_OFFSET+12
+XPRA_STARTUP_NOTIFICATION_ID    = XPRA_NOTIFICATIONS_OFFSET+13
+XPRA_FILETRANSFER_NOTIFICATION_ID = XPRA_NOTIFICATIONS_OFFSET+14
+XPRA_SHADOWWAYLAND_NOTIFICATION_ID = XPRA_NOTIFICATIONS_OFFSET+15
+
+
+#constants shared between client and server:
+#(do not modify the values, see also disconnect_is_an_error)
+#timeouts:
+CLIENT_PING_TIMEOUT     = "client ping timeout"
+LOGIN_TIMEOUT           = "login timeout"
+CLIENT_EXIT_TIMEOUT     = "client exit timeout"
+#errors:
+PROTOCOL_ERROR          = "protocol error"
+VERSION_ERROR           = "version error"
+CONTROL_COMMAND_ERROR   = "control command error"
+AUTHENTICATION_ERROR    = "authentication error"
+PERMISSION_ERROR        = "permission error"
+SERVER_ERROR            = "server error"
+SESSION_NOT_FOUND       = "session not found error"
+#informational (not a problem):
+DONE                    = "done"
+SERVER_EXIT             = "server exit"
+SERVER_UPGRADE          = "server upgrade"
+SERVER_SHUTDOWN         = "server shutdown"
+CLIENT_REQUEST          = "client request"
+DETACH_REQUEST          = "detach request"
+NEW_CLIENT              = "new client"
+IDLE_TIMEOUT            = "idle timeout"
+SESSION_BUSY            = "session busy"
+#client telling the server:
+CLIENT_EXIT             = "client exit"
+
+
+DEFAULT_PORT = 14500
+
+DEFAULT_PORTS = {
+    "ws"    : 80,
+    "wss"   : 443,
+    "ssl"   : DEFAULT_PORT, #could also default to 443?
+    "ssh"   : 22,
+    "tcp"   : DEFAULT_PORT,
+    "vnc"   : 5900,
+    }
+
+
+#magic value for "workspace" window property, means unset
+WORKSPACE_UNSET = 65535
+WORKSPACE_ALL = 0xffffffff
+
+WORKSPACE_NAMES = {
+                   WORKSPACE_UNSET  : "unset",
+                   WORKSPACE_ALL    : "all",
+                   }
+
+#this default value is based on 0.14.19 clients,
+#later clients should provide the 'metadata.supported" capability instead
+DEFAULT_METADATA_SUPPORTED = ("title", "icon-title", "pid", "iconic",
+                              "size-hints", "class-instance", "client-machine",
+                              "transient-for", "window-type",
+                              "fullscreen", "maximized", "decorations", "skip-taskbar", "skip-pager",
+                              "has-alpha", "override-redirect", "tray", "modal",
+                              "role", "opacity", "xid", "group-leader",
+                              "opaque-region",
+                              )
+
+
+#initiate-moveresize X11 constants
+MOVERESIZE_SIZE_TOPLEFT      = 0
+MOVERESIZE_SIZE_TOP          = 1
+MOVERESIZE_SIZE_TOPRIGHT     = 2
+MOVERESIZE_SIZE_RIGHT        = 3
+MOVERESIZE_SIZE_BOTTOMRIGHT  = 4
+MOVERESIZE_SIZE_BOTTOM       = 5
+MOVERESIZE_SIZE_BOTTOMLEFT   = 6
+MOVERESIZE_SIZE_LEFT         = 7
+MOVERESIZE_MOVE              = 8
+MOVERESIZE_SIZE_KEYBOARD     = 9
+MOVERESIZE_MOVE_KEYBOARD     = 10
+MOVERESIZE_CANCEL            = 11
+MOVERESIZE_DIRECTION_STRING = {
+                               MOVERESIZE_SIZE_TOPLEFT      : "SIZE_TOPLEFT",
+                               MOVERESIZE_SIZE_TOP          : "SIZE_TOP",
+                               MOVERESIZE_SIZE_TOPRIGHT     : "SIZE_TOPRIGHT",
+                               MOVERESIZE_SIZE_RIGHT        : "SIZE_RIGHT",
+                               MOVERESIZE_SIZE_BOTTOMRIGHT  : "SIZE_BOTTOMRIGHT",
+                               MOVERESIZE_SIZE_BOTTOM       : "SIZE_BOTTOM",
+                               MOVERESIZE_SIZE_BOTTOMLEFT   : "SIZE_BOTTOMLEFT",
+                               MOVERESIZE_SIZE_LEFT         : "SIZE_LEFT",
+                               MOVERESIZE_MOVE              : "MOVE",
+                               MOVERESIZE_SIZE_KEYBOARD     : "SIZE_KEYBOARD",
+                               MOVERESIZE_MOVE_KEYBOARD     : "MOVE_KEYBOARD",
+                               MOVERESIZE_CANCEL            : "CANCEL",
+                               }
+SOURCE_INDICATION_UNSET     = 0
+SOURCE_INDICATION_NORMAL    = 1
+SOURCE_INDICATION_PAGER     = 2
+SOURCE_INDICATION_STRING    = {
+                               SOURCE_INDICATION_UNSET      : "UNSET",
+                               SOURCE_INDICATION_NORMAL     : "NORMAL",
+                               SOURCE_INDICATION_PAGER      : "PAGER",
+                               }
+
+
+util_logger = None
+def get_util_logger():
+    global util_logger
+    if not util_logger:
+        from xpra.log import Logger
+        util_logger = Logger("util")
+    return util_logger
+
+
+#convenience method based on the strings above:
+def disconnect_is_an_error(reason):
+    return reason.find("error")>=0 or (reason.find("timeout")>=0 and reason!=IDLE_TIMEOUT)
+
+
+def dump_exc():
+    """Call this from a except: clause to print a nice traceback."""
+    print("".join(traceback.format_exception(*sys.exc_info())))
+
+def noerr(fn, *args):
+    try:
+        return fn(*args)
+    except Exception:
+        return None
+
+
+def net_utf8(value):
+    """
+    Given a value received by the network layer,
+    convert it to a string.
+    Gymnastics are involved if the rencode packet encoder is used
+    as it ends up giving us a string which is actually utf8 bytes.
+    """
+    #with 'rencodeplus' or 'bencode', we just get the unicode string directly:
+    if isinstance(value, str):
+        return value
+    #with rencode v1, we have to decode the value:
+    #(after converting it to 'bytes' if necessary)
+    return u(strtobytes(value))
+
+
+def u(v):
+    if isinstance(v, str):
+        return v
+    try:
+        return v.decode("utf8")
+    except (AttributeError, UnicodeDecodeError):
+        return bytestostr(v)
+
+
+# A simple little class whose instances we can stick random bags of attributes
+# on.
+class AdHocStruct:
+    def __repr__(self):
+        return ("<%s object, contents: %r>"
+                % (type(self).__name__, self.__dict__))
+
+
+def remove_dupes(seq):
+    seen = set()
+    seen_add = seen.add
+    return [x for x in seq if not (x in seen or seen_add(x))]
+
+def merge_dicts(a, b, path=None):
+    """ merges b into a """
+    if path is None:
+        path = []
+    for key in b:
+        if key in a:
+            if isinstance(a[key], dict) and isinstance(b[key], dict):
+                merge_dicts(a[key], b[key], path + [str(key)])
+            elif a[key] == b[key]:
+                pass # same leaf value
+            else:
+                raise Exception('Conflict at %s: existing value is %s, new value is %s' % (
+                    '.'.join(path + [str(key)]), a[key], b[key]))
+        else:
+            a[key] = b[key]
+    return a
+
+def make_instance(class_options, *args):
+    log = get_util_logger()
+    log("make_instance%s", tuple([class_options]+list(args)))
+    for c in class_options:
+        if c is None:
+            continue
+        try:
+            v = c(*args)
+            log("make_instance(..) %s()=%s", c, v)
+            if v:
+                return v
+        except Exception:
+            log.error("make_instance(%s, %s)", class_options, args, exc_info=True)
+            log.error("Error: cannot instantiate %s:", c)
+            log.error(" with arguments %s", tuple(args))
+    return None
+
+
+def roundup(n, m):
+    return (n + m - 1) & ~(m - 1)
+
+
+class AtomicInteger:
+    __slots__ = ("counter", "lock")
+    def __init__(self, integer = 0):
+        self.counter = integer
+        self.lock = threading.RLock()
+
+    def increase(self, inc = 1):
+        with self.lock:
+            self.counter = self.counter + inc
+            return self.counter
+
+    def decrease(self, dec = 1):
+        with self.lock:
+            self.counter = self.counter - dec
+            return self.counter
+
+    def get(self):
+        return self.counter
+
+    def __str__(self):
+        return str(self.counter)
+
+    def __repr__(self):
+        return "AtomicInteger(%s)" % self.counter
+
+
+    def __int__(self):
+        return self.counter
+
+    def __eq__(self, other):
+        try:
+            return self.counter==int(other)
+        except ValueError:
+            return -1
+
+    def __cmp__(self, other):
+        try:
+            return self.counter-int(other)
+        except ValueError:
+            return -1
+
+
+class MutableInteger(object):
+    __slots__ = ("counter")
+    def __init__(self, integer = 0):
+        self.counter = integer
+
+    def increase(self, inc = 1):
+        self.counter = self.counter + inc
+        return self.counter
+
+    def decrease(self, dec = 1):
+        self.counter = self.counter - dec
+        return self.counter
+
+    def get(self):
+        return self.counter
+
+    def __str__(self):
+        return str(self.counter)
+
+    def __repr__(self):
+        return "MutableInteger(%s)" % self.counter
+
+
+    def __int__(self):
+        return self.counter
+
+    def __eq__(self, other):
+        return self.counter==int(other)
+    def __ne__(self, other):
+        return self.counter!=int(other)
+    def __lt__(self, other):
+        return self.counter<int(other)
+    def __le__(self, other):
+        return self.counter<=int(other)
+    def __gt__(self, other):
+        return self.counter>int(other)
+    def __ge__(self, other):
+        return self.counter>=int(other)
+    def __cmp__(self, other):
+        return self.counter-int(other)
+
+
+def strtobytes(x) -> bytes:
+    if isinstance(x, bytes):
+        return x
+    return str(x).encode("latin1")
+def bytestostr(x) -> str:
+    if isinstance(x, (bytes, bytearray)):
+        return x.decode("latin1")
+    return str(x)
+
+def decode_str(x, try_encoding="utf8"):
+    """
+    When we want to decode something (usually a byte string) no matter what.
+    Try with utf8 first then fallback to just bytestostr().
+    """
+    try:
+        return x.decode(try_encoding)
+    except (AttributeError, UnicodeDecodeError):
+        return bytestostr(x)
+
+
+_RaiseKeyError = object()
+
+class typedict(dict):
+    __slots__ = ("warn", ) # no __dict__ - that would be redundant
+    @staticmethod # because this doesn't make sense as a global function.
+    def _process_args(mapping=(), **kwargs):
+        if hasattr(mapping, "items"):
+            mapping = getattr(mapping, "items")()
+        return ((bytestostr(k), v) for k, v in chain(mapping, getattr(kwargs, "items")()))
+    def __init__(self, mapping=(), **kwargs):
+        super().__init__(self._process_args(mapping, **kwargs))
+        self.warn = self._warn
+    def __getitem__(self, k):
+        return super().__getitem__(bytestostr(k))
+    def __setitem__(self, k, v):
+        return super().__setitem__(bytestostr(k), v)
+    def __delitem__(self, k):
+        return super().__delitem__(bytestostr(k))
+    def get(self, k, default=None):
+        return super().get(bytestostr(k), default)
+    def setdefault(self, k, default=None):
+        return super().setdefault(bytestostr(k), default)
+    def pop(self, k, v=_RaiseKeyError):
+        if v is _RaiseKeyError:
+            return super().pop(bytestostr(k))
+        return super().pop(bytestostr(k), v)
+    def update(self, mapping=(), **kwargs):
+        super().update(self._process_args(mapping, **kwargs))
+    def __contains__(self, k):
+        return super().__contains__(bytestostr(k))
+    @classmethod
+    def fromkeys(cls, keys, v=None):
+        return super().fromkeys((bytestostr(k) for k in keys), v)
+    def __repr__(self):
+        return '{0}({1})'.format(type(self).__name__, super().__repr__())
+
+    def _warn(self, msg, *args):
+        get_util_logger().warn(msg, *args)
+
+    def conv_get(self, k, default=None, conv=None):
+        if not super().__contains__(bytestostr(k)):
+            return default
+        v = self.get(k, default)
+        try:
+            return conv(v)
+        except (TypeError, ValueError, AssertionError) as e:
+            self._warn("Warning: failed to convert %s using %s: %s", type(v), conv, e)
+            return default
+
+    def uget(self, k, default=None):
+        return self.conv_get(k, default, u)
+
+    def strget(self, k, default=None):
+        return self.conv_get(k, default, bytestostr)
+
+    def bytesget(self, k : str, default=None):
+        return self.conv_get(k, default, strtobytes)
+
+    def intget(self, k : str, default=0):
+        return self.conv_get(k, default, int)
+
+    def boolget(self, k : str, default=False):
+        return self.conv_get(k, default, bool)
+
+    def dictget(self, k : str, default=None):
+        def checkdict(v):
+            assert isinstance(v, dict)
+            return v
+        return self.conv_get(k, default, checkdict)
+
+    def intpair(self, k : str, default_value=None):
+        v = self.inttupleget(k, default_value)
+        if v is None:
+            return default_value
+        if len(v)!=2:
+            #"%s is not a pair of numbers: %s" % (k, len(v))
+            return default_value
+        try:
+            return int(v[0]), int(v[1])
+        except ValueError:
+            return default_value
+
+    def strtupleget(self, k : str, default_value=(), min_items=None, max_items=None):
+        return self.tupleget(k, default_value, str, min_items, max_items)
+
+    def inttupleget(self, k : str, default_value=(), min_items=None, max_items=None):
+        return self.tupleget(k, default_value, int, min_items, max_items)
+
+    def tupleget(self, k : str, default_value=(), item_type=None, min_items=None, max_items=None):
+        v = self._listget(k, default_value, item_type, min_items, max_items)
+        if isinstance(v, list):
+            v = tuple(v)
+        return v
+
+    def _listget(self, k : str, default_value, item_type=None, min_items=None, max_items=None):
+        v = self.get(k)
+        if v is None:
+            return default_value
+        if not isinstance(v, (list, tuple)):
+            self._warn("listget%s", (k, default_value, item_type, max_items))
+            self._warn("expected a list or tuple value for %s but got %s", k, type(v))
+            return default_value
+        if min_items is not None:
+            if len(v)<min_items:
+                self._warn("too few items in %s %s: minimum %s allowed, but got %s", type(v), k, max_items, len(v))
+                return default_value
+        if max_items is not None:
+            if len(v)>max_items:
+                self._warn("too many items in %s %s: maximum %s allowed, but got %s", type(v), k, max_items, len(v))
+                return default_value
+        aslist = list(v)
+        if item_type:
+            for i, x in enumerate(aslist):
+                if isinstance(x, bytes) and item_type==str:
+                    x = bytestostr(x)
+                    aslist[i] = x
+                elif isinstance(x, str) and item_type==str:
+                    x = str(x)
+                    aslist[i] = x
+                if not isinstance(x, item_type):
+                    if callable(item_type):
+                        try:
+                            return item_type(x)
+                        except Exception:
+                            self._warn("invalid item type for %s %s: %s cannot be used with %s",
+                                       type(v), k, item_type, type(x))
+                            return default_value
+                    self._warn("invalid item type for %s %s: expected %s but got %s",
+                               type(v), k, item_type, type(x))
+                    return default_value
+        return aslist
+
+
+def parse_scaling_value(v):
+    if not v:
+        return None
+    if v.endswith("%"):
+        return float(v[:1]).as_integer_ratio()
+    values = v.replace("/", ":").replace(",", ":").split(":", 1)
+    values = [int(x) for x in values]
+    for x in values:
+        assert x>0, "invalid scaling value %s" % x
+    if len(values)==1:
+        ret = 1, values[0]
+    else:
+        assert values[0]<=values[1], "cannot upscale"
+        ret = values[0], values[1]
+    return ret
+
+def from0to100(v):
+    return intrangevalidator(v, 0, 100)
+
+def intrangevalidator(v, min_value=None, max_value=None):
+    v = int(v)
+    if min_value is not None and v<min_value:
+        raise ValueError("value must be greater than %i" % min_value)
+    if max_value is not None and v>max_value:
+        raise ValueError("value must be lower than %i" % max_value)
+    return v
+
+
+def log_screen_sizes(root_w, root_h, sizes):
+    try:
+        do_log_screen_sizes(root_w, root_h, sizes)
+    except Exception as e:
+        get_util_logger().warn("failed to parse screen size information: %s", e, exc_info=True)
+
+def prettify_plug_name(s, default=""):
+    if not s:
+        return default
+    try:
+        s = s.decode("utf8")
+    except (AttributeError, UnicodeDecodeError):
+        pass
+    #prettify strings on win32
+    s = re.sub(r"[0-9\.]*\\", "-", s).lstrip("-")
+    if s.startswith("WinSta-"):
+        s = s[len("WinSta-"):]
+    if s.startswith("(Standard monitor types) "):
+        s = s[len("(Standard monitor types) "):]
+    if s=="0":
+        s = default
+    return s
+
+def do_log_screen_sizes(root_w, root_h, sizes):
+    from xpra.log import Logger
+    log = Logger("screen")
+    #old format, used by some clients (android):
+    if not isinstance(sizes, (tuple, list)):
+        return
+    if any(True for x in sizes if not isinstance(x, (tuple, list))):
+        return
+    def dpi(size_pixels, size_mm):
+        if size_mm==0:
+            return 0
+        return round(size_pixels * 254 / size_mm / 10)
+    def add_workarea(info, wx, wy, ww, wh):
+        info.append("workarea: %4ix%-4i" % (ww, wh))
+        if wx!=0 or wy!=0:
+            #log position if not (0, 0)
+            info.append("at %4ix%-4i" % (wx, wy))
+    for s in sizes:
+        if len(s)<10:
+            log.info(" %s", s)
+            continue
+        #more detailed output:
+        display_name, width, height, width_mm, height_mm, \
+        monitors, work_x, work_y, work_width, work_height = s[:10]
+        #always log plug name:
+        info = ["%s" % prettify_plug_name(display_name)]
+        if width!=root_w or height!=root_h:
+            #log plug dimensions if not the same as display (root):
+            info.append("%ix%i" % (width, height))
+        sdpix = dpi(width, width_mm)
+        sdpiy = dpi(height, height_mm)
+        info.append("(%ix%i mm - DPI: %ix%i)" % (width_mm, height_mm, sdpix, sdpiy))
+
+        if work_width!=width or work_height!=height or work_x!=0 or work_y!=0:
+            add_workarea(info, work_x, work_y, work_width, work_height)
+        log.info("  "+" ".join(info))
+        #sort monitors from left to right, top to bottom:
+        monitors_distances = []
+        for m in monitors:
+            plug_x, plug_y = m[1:3]
+            monitors_distances.append((plug_x+plug_y*width, m))
+        sorted_monitors = [x[1] for x in sorted(monitors_distances)]
+        for i, m in enumerate(sorted_monitors, start=1):
+            if len(m)<7:
+                log.info("    %s", m)
+                continue
+            plug_name, plug_x, plug_y, plug_width, plug_height, plug_width_mm, plug_height_mm = m[:7]
+            default_name = "monitor %i" % i
+            info = ['%-16s' % prettify_plug_name(plug_name, default_name)]
+            if plug_width!=width or plug_height!=height or plug_x!=0 or plug_y!=0:
+                info.append("%4ix%-4i" % (plug_width, plug_height))
+                if plug_x!=0 or plug_y!=0 or len(sorted_monitors)>1:
+                    info.append("at %4ix%-4i" % (plug_x, plug_y))
+            if (plug_width_mm!=width_mm or plug_height_mm!=height_mm) and (plug_width_mm>0 or plug_height_mm>0):
+                dpix = dpi(plug_width, plug_width_mm)
+                dpiy = dpi(plug_height, plug_height_mm)
+                dpistr = ""
+                if sdpix!=dpix or sdpiy!=dpiy or len(sorted_monitors)>1:
+                    dpistr = " - DPI: %ix%i" % (dpix, dpiy)
+                info.append("(%3ix%-3i mm%s)" % (plug_width_mm, plug_height_mm, dpistr))
+            if len(m)>=11:
+                dwork_x, dwork_y, dwork_width, dwork_height = m[7:11]
+                #only show it again if different from the screen workarea
+                if dwork_x!=work_x or dwork_y!=work_y or dwork_width!=work_width or dwork_height!=work_height:
+                    add_workarea(info, dwork_x, dwork_y, dwork_width, dwork_height)
+            istr = (" ".join(info)).rstrip(" ")
+            if len(monitors)==1 and istr.lower() in ("unknown unknown", "0", "1", default_name, "screen", "monitor"):
+                #a single monitor with no real name,
+                #so don't bother showing it:
+                continue
+            log.info("    "+istr)
+
+def get_screen_info(screen_sizes):
+    #same format as above
+    if not screen_sizes:
+        return {}
+    info = {
+            "screens" : len(screen_sizes)
+            }
+    for i, x in enumerate(screen_sizes):
+        if not isinstance(x, (tuple, list)):
+            continue
+        sinfo = info.setdefault("screen", {}).setdefault(i, {})
+        sinfo["display"] = x[0]
+        if len(x)>=3:
+            sinfo["size"] = x[1], x[2]
+        if len(x)>=5:
+            sinfo["size_mm"] = x[3], x[4]
+        if len(x)>=6:
+            monitors = x[5]
+            for j, monitor in enumerate(monitors):
+                if len(monitor)>=7:
+                    minfo = sinfo.setdefault("monitor", {}).setdefault(j, {})
+                    for k,v in {
+                                "name"      : monitor[0],
+                                "geometry"  : monitor[1:5],
+                                "size_mm"   : monitor[5:7],
+                                }.items():
+                        minfo[k] = v
+        if len(x)>=10:
+            sinfo["workarea"] = x[6:10]
+    return info
+
+def dump_all_frames(logger=None):
+    try:
+        frames = sys._current_frames()      #pylint: disable=protected-access
+    except AttributeError:
+        return
+    else:
+        dump_frames(frames.items(), logger)
+
+def dump_gc_frames(logger=None):
+    import gc
+    #import types
+    import inspect
+    gc.collect()
+    #frames = tuple(x for x in gc.get_objects() if isinstance(x, types.FrameType))
+    frames = tuple((None, x) for x in gc.get_objects() if inspect.isframe(x))
+    dump_frames(frames, logger)
+
+def dump_frames(frames, logger=None):
+    if not logger:
+        logger = get_util_logger()
+    logger("found %s frames:", len(frames))
+    for i,(fid,frame) in enumerate(frames):
+        fidstr = ""
+        if fid is not None:
+            try:
+                fidstr = hex(fid)
+            except TypeError:
+                fidstr = str(fid)
+        logger("%i: %s %s:", i, fidstr, frame)
+        for x in traceback.format_stack(frame):
+            for l in x.splitlines():
+                logger("%s", l)
+
+
+def detect_leaks():
+    import tracemalloc
+    tracemalloc.start()
+    last_snapshot = [tracemalloc.take_snapshot()]
+    def print_leaks():
+        s1 = last_snapshot[0]
+        s2 = tracemalloc.take_snapshot()
+        last_snapshot[0] = s2
+        top_stats = s2.compare_to(s1, 'lineno')
+        print("[ Top 20 differences ]")
+        for stat in top_stats[:20]:
+            print(stat)
+        for i, stat in enumerate(top_stats[:20]):
+            print()
+            print("top %i:" % i)
+            print("%s memory blocks: %.1f KiB" % (stat.count, stat.size / 1024))
+            for line in stat.traceback.format():
+                print(line)
+        return True
+    return print_leaks
+
+def start_mem_watcher(ms):
+    from xpra.make_thread import start_thread
+    start_thread(mem_watcher, name="mem-watcher", daemon=True, args=(ms,))
+
+def mem_watcher(ms, pid=os.getpid()):
+    import time
+    import psutil
+    process = psutil.Process(pid)
+    while True:
+        mem = process.memory_full_info()
+        #get_util_logger().info("memory usage: %s", mem.mem//1024//1024)
+        get_util_logger().info("memory usage for %s: %s", pid, mem)
+        time.sleep(ms/1000.0)
+
+def log_mem_info(prefix="memory usage: ", pid=os.getpid()):
+    import psutil
+    process = psutil.Process(pid)
+    mem = process.memory_full_info()
+    print("%i %s%s" % (pid, prefix, mem))
+
+
+class ellipsizer:
+    __slots__ = ("obj", "limit")
+    def __init__(self, obj, limit=100):
+        self.obj = obj
+        self.limit = limit
+    def __str__(self):
+        if self.obj is None:
+            return "None"
+        return repr_ellipsized(self.obj, self.limit)
+    def __repr__(self):
+        if self.obj is None:
+            return "None"
+        return repr_ellipsized(self.obj, self.limit)
+
+def repr_ellipsized(obj, limit=100):
+    if isinstance(obj, str):
+        if len(obj)>limit>6:
+            return nonl(obj[:limit//2-2]+" .. "+obj[2-limit//2:])
+        return nonl(obj)
+    if isinstance(obj, memoryview):
+        obj = obj.tobytes()
+    if isinstance(obj, bytes):
+        try:
+            s = nonl(repr(obj))
+        except Exception:
+            s = binascii.hexlify(obj).decode()
+        if len(s)>limit>6:
+            return nonl(s[:limit//2-2]+" .. "+s[2-limit//2:])
+        return s
+    return repr_ellipsized(repr(obj), limit)
+
+
+def rindex(alist, avalue):
+    return len(alist) - alist[::-1].index(avalue) - 1
+
+
+def notypedict(d):
+    for k in list(d.keys()):
+        v = d[k]
+        if isinstance(v, dict):
+            d[k] = notypedict(v)
+    return dict(d)
+
+def flatten_dict(info, sep="."):
+    to = {}
+    _flatten_dict(to, sep, None, info)
+    return to
+
+def _flatten_dict(to, sep, path, d):
+    for k,v in d.items():
+        if path:
+            if k:
+                npath = path+sep+bytestostr(k)
+            else:
+                npath = path
+        else:
+            npath = bytestostr(k)
+        if isinstance(v, dict):
+            _flatten_dict(to, sep, npath, v)
+        elif v is not None:
+            to[npath] = v
+
+def parse_simple_dict(s="", sep=","):
+    #parse the options string and add the pairs:
+    d = {}
+    for el in s.split(sep):
+        if not el:
+            continue
+        try:
+            k, v = el.split("=", 1)
+            cur = d.get(k)
+            if cur:
+                if not isinstance(cur, list):
+                    cur = [cur]
+                cur.append(v)
+                v = cur
+            d[k] = v
+        except Exception as e:
+            log = get_util_logger()
+            log.warn("Warning: failed to parse dictionary option '%s':", s)
+            log.warn(" %s", e)
+    return d
+
+#used for merging dicts with a prefix and suffix
+#non-None values get added to <todict> with a prefix and optional suffix
+def updict(todict, prefix, d, suffix="", flatten_dicts=False):
+    if not d:
+        return todict
+    for k,v in d.items():
+        if v is not None:
+            if k:
+                k = prefix+"."+str(k)
+            else:
+                k = prefix
+            if suffix:
+                k = k+"."+suffix
+            if flatten_dicts and isinstance(v, dict):
+                updict(todict, k, v)
+            else:
+                todict[k] = v
+    return todict
+
+def pver(v, numsep=".", strsep=", "):
+    #print for lists with version numbers, or CSV strings
+    if isinstance(v, (list, tuple)):
+        types = list(set(type(x) for x in v))
+        if len(types)==1:
+            if types[0]==int:
+                return numsep.join(str(x) for x in v)
+            if types[0]==str:
+                return strsep.join(str(x) for x in v)
+            if types[0]==bytes:
+                def s(x):
+                    try:
+                        return x.decode("utf8")
+                    except UnicodeDecodeError:
+                        return bytestostr(x)
+                return strsep.join(s(x) for x in v)
+    return bytestostr(v)
+
+def sorted_nicely(l):
+    """ Sort the given iterable in the way that humans expect."""
+    def convert(text):
+        if text.isdigit():
+            return int(text)
+        return text
+    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', bytestostr(key))]
+    return sorted(l, key = alphanum_key)
+
+def print_nested_dict(d, prefix="", lchar="*", pad=32, vformat=None, print_fn=None,
+                      version_keys=("version", "revision"), hex_keys=("data", )):
+    #"smart" value formatting function:
+    def sprint(arg):
+        if print_fn:
+            print_fn(arg)
+        else:
+            print(arg)
+    def vf(k, v):
+        if vformat:
+            fmt = vformat
+            if isinstance(vformat, dict):
+                fmt = vformat.get(k)
+            if fmt is not None:
+                return nonl(fmt(v))
+        try:
+            if any(k.find(x)>=0 for x in version_keys):
+                return nonl(pver(v)).lstrip("v")
+            if any(k.find(x)>=0 for x in hex_keys):
+                return binascii.hexlify(v)
+        except Exception:
+            pass
+        return nonl(pver(v, ", ", ", "))
+    l = pad-len(prefix)-len(lchar)
+    for k in sorted_nicely(d.keys()):
+        v = d[k]
+        if isinstance(v, dict):
+            nokey = v.get("", (v.get(None)))
+            if nokey is not None:
+                sprint("%s%s %s : %s" % (prefix, lchar, bytestostr(k).ljust(l), vf(k, nokey)))
+                for x in ("", None):
+                    v.pop(x, None)
+            else:
+                sprint("%s%s %s" % (prefix, lchar, bytestostr(k)))
+            print_nested_dict(v, prefix+"  ", "-", vformat=vformat, print_fn=print_fn,
+                              version_keys=version_keys, hex_keys=hex_keys)
+        else:
+            sprint("%s%s %s : %s" % (prefix, lchar, bytestostr(k).ljust(l), vf(k, v)))
+
+def reverse_dict(d):
+    reversed_d = {}
+    for k,v in d.items():
+        reversed_d[v] = k
+    return reversed_d
+
+
+def std(s, extras="-,./: "):
+    s = s or ""
+    try:
+        s = s.decode("latin1")
+    except Exception:
+        pass
+    def c(v):
+        try:
+            return chr(v)
+        except Exception:
+            return str(v)
+    def f(v):
+        return str.isalnum(c(v)) or v in extras
+    return "".join(filter(f, s))
+
+def alnum(s):
+    try:
+        s = s.encode("latin1")
+    except Exception:
+        pass
+    def c(v):
+        try:
+            return chr(v)
+        except Exception:
+            return str(v)
+    def f(v):
+        return str.isalnum(c(v))
+    return "".join(c(v) for v in filter(f, s))
+
+def nonl(x):
+    if x is None:
+        return None
+    return str(x).replace("\n", "\\n").replace("\r", "\\r")
+
+def engs(v):
+    if isinstance(v, int):
+        l = v
+    else:
+        try:
+            l = len(v)
+        except TypeError:
+            return ""
+    return "s" if l!=1 else ""
+
+
+def obsc(v):
+    OBSCURE_PASSWORDS = envbool("XPRA_OBSCURE_PASSWORDS", True)
+    if OBSCURE_PASSWORDS:
+        return "".join("*" for _ in (v or ""))
+    return v
+
+
+def csv(v):
+    try:
+        return ", ".join(str(x) for x in v)
+    except Exception:
+        return str(v)
+
+
+def unsetenv(*varnames):
+    for x in varnames:
+        os.environ.pop(x, None)
+
+def envint(name : str, d=0):
+    try:
+        return int(os.environ.get(name, d))
+    except ValueError:
+        return d
+
+def envbool(name : str, d=False):
+    try:
+        v = os.environ.get(name, "").lower()
+        if v is None:
+            return d
+        if v in ("yes", "true", "on"):
+            return True
+        if v in ("no", "false", "off"):
+            return False
+        return bool(int(v))
+    except ValueError:
+        return d
+
+def envfloat(name : str, d=0):
+    try:
+        return float(os.environ.get(name, d))
+    except ValueError:
+        return d
+
+
+#give warning message just once per key then ignore:
+_once_only = set()
+def first_time(key):
+    global _once_only
+    if key not in _once_only:
+        _once_only.add(key)
+        return True
+    return False
