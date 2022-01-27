@@ -1,0 +1,54 @@
+# This file is part of Sympathy for Data.
+# Copyright (c) 2013, 2017, Combine Control Systems AB
+#
+# Sympathy for Data is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3 of the License.
+#
+# Sympathy for Data is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Sympathy for Data.  If not, see <http://www.gnu.org/licenses/>.
+import os
+import zipfile
+from sylib.export import datasource as exportdatasource
+from sympathy.platform.exceptions import sywarn
+
+
+class DataExtractZip(exportdatasource.DatasourceArchiveBase):
+    """Extractor for ZIP files."""
+
+    EXPORTER_NAME = "ZIP Extractor"
+    FILENAME_EXTENSION = None
+
+    @staticmethod
+    def hide_filename():
+        return True
+
+    def export_data(self, in_datasource, directory, progress=None):
+        file = in_datasource.decode_path()
+        filenames = self._create_filenames(file)
+        if len(filenames):
+            zip_infile = zipfile.ZipFile(file)
+            zip_infile.extractall(directory)
+        else:
+            sywarn(file + ' is either empty or not a valid ZIP file.')
+        return filenames
+
+    def create_filenames(self, input_list, filename, *args):
+        filenames = []
+        for path in input_list:
+            filenames.extend(self._create_filenames(path.decode_path()))
+        return filenames
+
+    def _create_filenames(self, path):
+        if os.path.isfile(path) and zipfile.is_zipfile(path):
+            return [file.filename for file in zipfile.ZipFile(path).infolist()
+                    if not file.is_dir()]
+        return []
+
+    def cardinality(self):
+        return self.one_to_many

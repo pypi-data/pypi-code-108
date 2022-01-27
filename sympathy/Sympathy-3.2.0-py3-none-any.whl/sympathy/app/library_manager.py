@@ -1,0 +1,1874 @@
+# This file is part of Sympathy for Data.
+# Copyright (c) 2021 Combine Control Systems AB
+#
+# Sympathy for Data is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3 of the License.
+#
+# Sympathy for Data is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Sympathy for Data.  If not, see <http://www.gnu.org/licenses/>.
+import os
+import os.path
+import sys
+import shutil
+import json
+import glob
+import re
+import io
+import time
+import subprocess
+import distutils.dir_util
+import distutils.file_util
+import threading
+import base64
+import inspect
+import jinja2
+from collections import OrderedDict
+
+from .tasks import task_worker
+from . import version
+from sympathy.platform import workflow_converter
+from sympathy.platform import os_support
+from sympathy.platform import version_support as vs
+from sympathy.platform import node_result
+from sympathy.utils.prim import uri_to_path, unipath
+from sympathy.utils import prim, log
+from sympathy.platform.parameter_helper import ParameterRoot
+from sympathy.platform.parameter_helper_visitors import ShowParameterVisitor
+from sympathy.platform import message as msgmod
+from sympathy.utils.context import indent_doc
+from sympathy.platform import port as port_platform
+from sympathy.utils.tag import LibraryTags
+from sympathy.platform import library as library_platform
+
+core_logger = log.get_logger('core')
+_fs_encoding = sys.getfilesystemencoding()
+
+LABEL = 'label'
+
+
+def library_by_json(library_json_filename):
+    """Return the library from library_json_filename."""
+    with open(library_json_filename) as library_json_file:
+        return json.load(library_json_file)
+
+
+def library_node_filenames(library_json):
+    res = []
+    for library in library_json:
+        for node in library.get('nodes', []):
+            path = uri_to_path(node['file'])
+            if node['type'].startswith('python'):
+                try:
+                    res.append(uri_to_path(path))
+                except Exception:
+                    print('Failed processing node:{0}'.format(path))
+    return list(set(res))
+
+
+def libraries_from_creator(output):
+    libraries = []
+
+    for l in output or []:
+
+        inherit = {}
+
+        for key in ['installed', 'maintainer', 'copyright']:
+            inherit[key] = l[key]
+
+        inherit['library'] = l['root']
+        inherit['library_identifier'] = l['identifier']
+
+        nodes = []
+        for node_file, js_nodes in l['js_nodes'].items():
+            for js_node in js_nodes:
+                try:
+                    with open(js_node) as f:
+                        node = json.load(
+                            f, object_pairs_hook=OrderedDict)
+                        node['filename'] = node_file
+                        node['migrations'] = l['migrations_info'].get(
+                            node['id'], [])
+                        node.update(inherit)
+                except Exception:
+                    core_logger.warning(
+                        'Failed to process library node %s', js_node)
+                else:
+                    nodes.append(node)
+
+        library = {
+            k: l[k] for k in [
+                'name',
+                'root',
+                'identifier',
+                'maintainer',
+                'description',
+                'copyright',
+                'tags',
+                'types',
+                'examples_path',
+                'repository_url',
+                'documentation_url',
+                'home_url',
+                'required_features',
+                'style',
+                'package',
+                'plugins_info',
+                'installed']}
+        library['nodes'] = nodes
+        libraries.append(library)
+
+    return libraries
+
+
+def library_tags(library_json):
+    return LibraryTags.merge(
+        [LibraryTags.from_dict(l['tags']) for l in library_json]).to_dict()
+
+
+class RstMaker(object):
+    """
+    Used to generate rst files from a library.
+    These are used by Sphinx to generate documentation.
+    """
+
+    def __init__(self):
+        self._cache = {}
+
+    def file_cache_clear(self):
+        self._cache.clear()
+
+    def file_cache(self):
+        return set(self._cache)
+
+    CONFIG = """# -*- coding: utf-8 -*-
+#
+# Sympathy documentation build configuration file, created by
+# sphinx-quickstart on Mon Mar 12 09:40:09 2013.
+#
+# This file is execfile() with the current directory set to its containing dir.
+#
+# Note that not all possible configuration values are present in this
+# autogenerated file.
+#
+# All configuration values have a default; values that are commented out
+# serve to show the default.
+
+import sys, os
+
+import warnings
+
+# If extensions (or modules to document with autodoc) are in another directory,
+# add these directories to sys.path here. If the directory is relative to the
+# documentation root, use os.path.abspath to make it absolute, like shown here.
+
+paths = {{paths}}
+
+fs_encoding = sys.getfilesystemencoding()
+
+try:
+    confdir = os.path.dirname(__file__).decode(fs_encoding)
+except Exception:
+    confdir = os.path.dirname(__file__)
+
+
+sys.path[:] = sys.path + [os.path.normpath(os.path.join(confdir, path)
+    if not os.path.isabs(path) else path)
+    for path in paths]
+
+
+# For ensuring that everything fails when sympathy cannot be imported.
+import sympathy
+
+# -- General configuration ----------------------------------------------------
+
+# If your documentation needs a minimal Sphinx version, state it here.
+# needs_sphinx = '1.0'
+
+
+# Add any Sphinx extension module names here, as strings. They can be
+# extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
+
+excluded_exts = {{excluded_exts}}
+
+extensions = [
+    'sphinx.ext.autodoc',
+    'sphinx.ext.doctest',
+    'sphinx.ext.todo',
+    'sphinx.ext.ifconfig',
+    'sphinx.ext.viewcode',
+    'sphinx.ext.intersphinx',
+    'sphinx.ext.napoleon']
+
+try:
+    import sphinx.ext.imgmath
+    extensions.extend([
+        'sphinx.ext.imgmath'])
+except ImportError:
+    extensions.extend([
+        'sphinx.ext.pngmath',
+        'sphinx.ext.mathjax'])
+
+extensions = [e for e in extensions if e not in excluded_exts]
+
+# Add any paths that contain templates here, relative to this directory.
+templates_path = ['_templates']
+
+# The suffix of source filenames.
+source_suffix = '.rst'
+
+# The encoding of source files.
+# source_encoding = 'utf-8-sig'
+
+# The master toctree document.
+master_doc = 'index'
+
+# General information about the project.
+project = '{{name}}'
+copyright = '{{copyright}}'
+
+# The version info for the project you're documenting, acts as replacement for
+# |version| and |release|, also used in various other places throughout the
+# built documents.
+#
+# The short X.Y version.
+version = '{{version}}'
+# The full version, including alpha/beta/rc tags.
+release = '{{release}}'
+
+# The language for content autogenerated by Sphinx. Refer to documentation
+# for a list of supported languages.
+#language = None
+
+# There are two options for replacing |today|: either, you set today to some
+# non-false value, then it is used:
+#today = ''
+# Else, today_fmt is used as the format for a strftime call.
+#today_fmt = '%B %d, %Y'
+
+# List of patterns, relative to source directory, that match files and
+# directories to ignore when looking for source files.
+# We need to exclude __library_description.rst files lest sphinx should give
+# warnings about them not being included in the toctree.
+exclude_patterns = ['build', '**/__library_description.rst']
+
+# The reST default role (used for this markup: `text`) to use for all
+# documents.
+# default_role = None
+
+# If true, '()' will be appended to :func: etc. cross-reference text.
+#add_function_parentheses = True
+
+# If true, the current module name will be prepended to all description
+# unit titles (such as .. function::).
+#add_module_names = True
+
+# If true, sectionauthor and moduleauthor directives will be shown in the
+# output. They are ignored by default.
+#show_authors = False
+
+# The name of the Pygments (syntax highlighting) style to use.
+pygments_style = 'sphinx'
+
+# A list of ignored prefixes for module index sorting.
+#modindex_common_prefix = []
+
+# A dictionary of external documentations that we might want to link to.
+# intersphinx_mapping = dict([
+#     ('python', ('http://docs.python.org/3', None)),
+#     ('numpy', ('http://docs.scipy.org/doc/numpy/', None)),
+#     ('scipy', ('http://docs.scipy.org/doc/scipy/reference/', None)),
+#     ('matplotlib', ('http://matplotlib.sourceforge.net/', None))])
+
+# -- Options for HTML output --------------------------------------------------
+
+html_theme = 'alabaster'
+html_theme_options = dict(logo_name=True)
+
+# The name for this set of Sphinx documents.  If None, it defaults to
+# "<project> v<release> documentation".
+#html_title = None
+
+# A shorter title for the navigation bar.  Default is the same as html_title.
+#html_short_title = None
+
+# The name of an image file (relative to this directory) to place at the top
+# of the sidebar.
+# TODO(magnus): This should be parameterized
+html_logo = 'application.png'
+
+# The name of an image file (within the static path) to use as favicon of the
+# docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
+# pixels large.
+# TODO(magnus): This should be parameterized
+html_favicon = 'favicon.ico'
+
+# Add any paths that contain custom static files (such as style sheets) here,
+# relative to this directory. They are copied after the builtin static files,
+# so a file named "default.css" will overwrite the builtin "default.css".
+#html_static_path = ['_static']
+
+# If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
+# using the given strftime format.
+#html_last_updated_fmt = '%b %d, %Y'
+
+# If true, SmartyPants will be used to convert quotes and dashes to
+# typographically correct entities.
+#html_use_smartypants = True
+
+# Custom sidebar templates, maps document names to template names.
+html_sidebars = dict()
+
+# Additional templates that should be rendered to pages, maps page names to
+# template names.
+#html_additional_pages = dict()
+
+# If false, no module index is generated.
+#html_domain_indices = True
+
+# If false, no index is generated.
+#html_use_index = True
+
+# If true, the index is split into individual pages for each letter.
+#html_split_index = False
+
+# If true, links to the reST sources are added to the pages.
+#html_show_sourcelink = False
+
+# If true, "Created using Sphinx" is shown in the HTML footer. Default is True.
+#html_show_sphinx = True
+
+# If true, "(C) Copyright ..." is shown in the HTML footer. Default is True.
+#html_show_copyright = True
+
+# If true, an OpenSearch description file will be output, and all pages will
+# contain a <link> tag referring to it.  The value of this option must be the
+# base URL from which the finished HTML is served.
+#html_use_opensearch = ''
+
+# This is the file name suffix for HTML files (e.g. ".xhtml").
+#html_file_suffix = None
+
+# Output file base name for HTML help builder.
+htmlhelp_basename = 'Sympathydoc'
+"""
+
+    INDEX = """
+Sympathy for Data
+=================
+
+Welcome to the documentation for *Sympathy for Data*.
+
+:Project page: `https://www.sympathyfordata.com <https://www.sympathyfordata.com>`_
+:Author: `Combine Control Systems AB <https://www.sympathyfordata.com/>`_
+
+
+Getting started
+---------------
+Want to learn more about what Sympathy for Data is and what it can do for you?
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Getting started
+
+   about_sympathy.rst
+   installation.rst
+   first_steps.rst
+   typical_workflow_structure.rst
+
+
+Workflow elements
+-----------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Workflow elements
+
+   concepts.rst
+   subflows.rst
+   functions.rst
+   migrations.rst
+
+
+Graphical user interface
+------------------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Graphical user interface
+
+   gui.rst
+   viewer.rst
+   nodes.rst
+   preferences.rst
+   issues.rst
+
+Command line interface
+----------------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Command line interface
+
+   batch.rst
+   interactive.rst
+
+
+Development
+-----------
+Learn how to write nodes and more.
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Development
+
+   develop_nodes.rst
+   pluginwriting.rst
+   library.rst
+   create_type.rst
+
+
+
+API Reference
+-------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: API Reference
+
+   node_reference.rst
+   parameter_helper_reference.rst
+   type_apis.rst
+
+
+.. _Library:
+
+
+Libraries
+---------
+Documentation for each type of node in the standard library of Sympathy for
+Data. Right-clicking on any node in the GUI and choosing *Help* will bring you
+to the help page for that specific node.
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Libraries
+
+   Library/index.rst
+
+
+Changes
+-------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Changes
+
+   news.rst
+   deprecations.rst
+
+
+Appendix
+--------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Appendix
+
+   appendix.rst
+
+
+Privacy Notice
+--------------
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Privacy Notice
+
+   privacy_notice.rst
+"""
+
+    PRIVACY_NOTICE = """
+.. _privacynotice:
+.. _generalprivacynotice:
+
+Privacy Notice
+--------------
+The Privacy Notice is available `here <{{privacy_url}}>`_.
+"""
+    # NEW jinja2 templates.
+
+    LIBRARY = """
+.. _`lib_{{library_name}}`:
+
+{{library_name}}
+{% for _ in library_name %}={% endfor %}
+
+{{description}}
+
+.. toctree::
+   :maxdepth: 2
+
+{{libraries}}
+{{nodes}}
+{{plugins}}
+
+"""
+
+    DEPRECATED = """
+.. warning::
+    This node is deprecated and will be removed in version {{version}}.
+    {{replacememt}}
+
+"""
+
+    RELATED = """
+**Related nodes**
+
+{{related_nodes}}
+
+"""
+
+    EXAMPLES = """
+**Example flows**
+
+{{example_links}}
+
+"""
+
+    PLUGINS = """
+**Plugins**
+
+{{plugin_links}}
+
+"""
+
+    NODE = """
+.. _`{{name}}`:
+
+.. _`{{id}}`:
+
+{{name}}
+{% for _ in name %}~{% endfor %}
+
+{{icon}}
+
+{{desc}}
+
+{{deprecated}}
+
+**Documentation**
+
+{{doc}}
+
+
+**Definition**
+
+{% for group, ports in ports %}
+*{{group}} ports*
+{% for port in ports %}
+    :{{port.name}}: {{port.nstr}} {{port.type}}
+
+        {{port.description}}
+{% endfor %}
+{% endfor %}
+
+{{params}}
+
+.. automodule:: {{module}}
+    :noindex:
+
+.. class:: {{class}}
+    :noindex:
+
+{{plugins}}
+
+{{related}}
+
+{{examples}}
+"""
+
+    FLOW = """
+.. _`{{name}}`:
+
+.. _`{{id}}`:
+
+{{name}}
+{% for _ in name %}={% endfor %}
+{{icon}}
+
+{{desc}}
+
+**Documentation**
+
+{{doc}}
+
+**Definition**
+
+{% for group, ports in ports %}
+*{{group}} ports*
+{% for port in ports %}
+    :{{port.name}}: {{port.type}}
+{% endfor %}
+{% endfor %}
+
+{{examples}}
+
+"""
+
+    LIB_INDEX = """
+{{name}}
+{% for _ in name %}={% endfor %}
+
+{{info}}
+
+{{desc}}
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Libraries
+
+   Library/index.rst
+"""
+
+    TAG_TERM = """
+.. _`lib_{{id}}`:
+
+{{name}}
+{% for _ in name %}={% endfor %}
+
+{{extra}}
+
+{{desc}}
+
+.. toctree::
+   :maxdepth: 2
+
+   {% for node in nodes %}
+   {{node}}
+   {% endfor %}
+
+"""
+
+    TAG_GROUP = """
+.. _`lib_{{id}}`:
+
+{{name}}
+{% for _ in name %}={% endfor %}
+
+{{extra}}
+
+{{desc}}
+
+.. toctree::
+   :maxdepth: 1
+
+   {% for node in nodes %}
+   {{node}}
+   {% endfor %}
+
+.. toctree::
+   :maxdepth: 2
+
+   {% for child in child_tags %}
+   {{child}}
+   {% endfor %}
+
+"""
+
+    PLUGIN_BASE = """
+.. _`plugin_{{id}}`:
+
+{{name}}
+{% for _ in name %}={% endfor %}
+
+.. autoclass:: {{full}}
+
+**Implementations**
+
+.. toctree::
+   :maxdepth: 2
+
+   {% for impl in impls %}
+   {{impl}}
+   {% endfor %}
+
+"""
+
+    PLUGIN_IMPL = """
+.. _`plugin_{{id}}`:
+
+{{name}}
+{% for _ in name %}={% endfor %}
+
+.. py:currentmodule:: {{module}}
+
+.. autoclass:: {{class}}
+
+"""
+
+    LIBRARY_INDEX = """
+.. _`lib_{{id}}`:
+
+{{name}}
+{% for _ in name %}={% endfor %}
+
+{{desc}}
+
+
+Nodes
+-----
+
+.. toctree::
+   :maxdepth: 2
+
+   {% for tag in tags %}
+   {{tag}}
+   {% endfor %}
+
+
+Plugins
+-------
+
+.. toctree::
+   :maxdepth: 2
+
+   {% for plugin in plugins %}
+   {{plugin}}
+   {% endfor %}
+
+"""
+
+    def _expand_template(self, template, env):
+        return jinja2.Template(template).render(**env)
+
+    def _make_index(self, filename, template, env):
+        self._add_to_cache(filename)
+        text = self._expand_template(template, env)
+        with open(filename, 'w',
+                  encoding='utf8') as f:
+            f.write(text)
+
+    def _add_to_cache(self, filename):
+        self._cache[os.path.abspath(filename)] = None
+
+    def _copy_file(self, src, dst):
+        shutil.copyfile(src, dst)
+        self._add_to_cache(dst)
+
+    def _write_cached(self, filename, text):
+        self._add_to_cache(filename)
+        cached = False
+        try:
+            with io.open(filename, 'r',
+                         encoding='utf8') as f:
+                if f.read() == text:
+                    cached = True
+        except (IOError, OSError):
+            pass
+
+        if not cached:
+            with io.open(filename, 'w',
+                         encoding='utf8') as f:
+                f.write(text)
+
+    def process_node(self, path, node, all_plugins, example_flows):
+
+        def format_examples(node_id):
+            # TODO: replace format based formatting with jinja2.
+            examples = example_flows.get(node_id)
+            res = ''
+            if examples:
+                mapping = {}
+                for example in examples:
+                    mapping[example[0]] = example
+
+                res = self._expand_template(self.EXAMPLES, {
+                    'example_links': '\n'.join(
+                        '* :download:`{basename} <{filename}>`'.format(
+                            basename=example[1] or os.path.basename(
+                                example[0]),
+                            filename=example[0])
+                        for example in mapping.values()),
+                })
+            return res
+
+        def format_related(related, node_id):
+            # TODO: replace format based formatting with jinja2.
+            res = ''
+            if related:
+                filtered_related = []
+                for n in related:
+                    if n != node_id and n not in filtered_related:
+                        filtered_related.append(n)
+                related = filtered_related
+                res = self._expand_template(self.RELATED, {
+                    'related_nodes': '\n'.join(
+                        '* :ref:`{node_id}`'.format(
+                            node_id=node_id)
+                        for node_id in related),
+                })
+            return res
+
+        def format_deprecated(deprecated_tuple):
+            # TODO: replace format based formatting with jinja2.
+            if not deprecated_tuple:
+                return ''
+
+            _, version, repl = deprecated_tuple
+            repl_text = ''
+            if repl:
+                repl_text = f'Please use {repl} instead.'
+            res = self._expand_template(self.DEPRECATED, {
+                'version': version,
+                'replacememt': repl_text,
+            })
+            return res
+
+        def prepare_ports(data):
+            def pport(port):
+                port = dict(port)
+                if 'n' in port:
+                    n = port['n']
+                    pmin = port_platform.minno(n)
+                    pmax = port_platform.maxno(n)
+                    port['nstr'] = f'{pmin} - {pmax}, '
+                else:
+                    port['nstr'] = ''
+
+                port['name'] = port.get('name') or '<unnamed>'
+                return port
+
+            return [(group, [pport(p) for p in ports])
+                    for group, ports in data]
+
+        def icon_path(icon_path, file_path, rel=True):
+            if os.path.exists(icon_path):
+                if rel:
+                    icon = unipath(os.path.relpath(
+                        icon_path, os.path.dirname(file_path)))
+                else:
+                    # TODO(erik): this case is somehow needed for icons in
+                    # _resources folders. Remove the need and this case.
+                    icon = os.path.basename(icon_path)
+                return '.. image:: {}\n   :width: 48\n'.format(icon)
+            return ''
+
+        node_filename = 'Unknown'
+        try:
+            node_filename = node['filename']
+            name = node['label']
+            type_ = node['type']
+            node_id = node['id']
+            desc = node['description'] or ''
+            file_ = uri_to_path(node['file'])
+            icon = uri_to_path(node.get('icon', ''))
+            related = node.get('related', [])
+            deprecated = node.get('deprecated')
+
+            if icon:
+                abs_icon_path = icon
+                rel_icon_path = os.path.relpath(
+                    icon, os.path.dirname(file_))
+                dst_icon_path = os.path.join(path, rel_icon_path)
+                try:
+                    os.makedirs(
+                        os.path.dirname(dst_icon_path), exist_ok=True)
+                    self._copy_file(
+                        abs_icon_path, dst_icon_path)
+                except (IOError, OSError):
+                    core_logger.warning(
+                        "Failed to copy icon file: %s", abs_icon_path)
+
+            if type_ == 'flow':
+                docs = node.get('documentation', '')
+                icon = icon_path(icon, file_)
+
+                with open(file_, 'rb') as f:
+                    flow_dict = workflow_converter.XMLToJson(f).dict()
+
+                    port_dict = flow_dict.get('ports', [])
+                    port_list = [
+                        ('Input', port_dict.get('inputs', [])),
+                        ('Output', port_dict.get('outputs', []))]
+
+                data = self._expand_template(self.FLOW, {
+                    'id': node_id,
+                    'name': name,
+                    'icon': icon,
+                    'desc': desc,
+                    'doc': docs,
+                    'ports': prepare_ports(port_list),
+                    'examples': format_examples(node_id),
+                    'related': format_related(related, node_id),
+                })
+                class_filename = os.path.join(
+                    path, os.path.basename(file_) + '.rst')
+            else:
+                icon = icon_path(icon, file_)
+                class_name = node['class']
+                node_id = node['id']
+                class_filename = os.path.join(path, class_name + '.rst')
+                module_name = os.path.splitext(os.path.basename(file_))[0]
+                node_desc = node.get('description', '')
+
+                doc = node.get('__doc__')
+                doc = inspect.cleandoc(doc or '')
+
+                plugins = node.get('plugins', [])
+                formatted_plugins = ''
+                if plugins:
+                    formatted_plugins = self._expand_template(self.PLUGINS, {
+                        'plugin_links': '\n'.join([
+                            '* :ref:`plugin_{}`'.format(plugin['class'].lower())
+                            for plugin in plugins]),
+                    })
+
+                show = ShowParameterVisitor()
+                # TODO: Unused code as overridden below
+                parameters = ParameterRoot(
+                    node.get('parameters', {}).get('data', {})).accept(show)
+                parameters = show.result
+                port_dict = node.get('ports', [])
+                port_list = [
+                    ('Input', port_dict.get('inputs', [])),
+                    ('Output', port_dict.get('outputs', []))]
+
+                parameters = parameters or ''
+                if parameters:
+                    # TODO: replace format based formatting with jinja2.
+                    if '*Configuration*:\n' not in doc:
+                        parameters = '*Configuration*:\n{}'.format(
+                            indent_doc(parameters, 4))
+                    else:
+                        parameters = ''
+
+                data = self._expand_template(self.NODE, {
+                    'class': class_name,
+                    'module': module_name,
+                    'name': name,
+                    'id': node_id,
+                    'desc': node_desc,
+                    'doc': doc,
+                    'icon': icon,
+                    'ports': prepare_ports(port_list),
+                    'examples': format_examples(node_id),
+                    'related': format_related(related, node_id),
+                    'params': parameters,
+                    'deprecated': format_deprecated(deprecated),
+                    'plugins': formatted_plugins,
+                })
+
+            self._write_cached(class_filename, data)
+            return class_filename
+        except Exception:
+            core_logger.warning('Failed generating node: %s', node_filename)
+            return 'missing'
+        # TODO: Remove? Not reachable as both try and except return
+        else:
+            data = self._expand_template(self.NODE, {
+                'class': class_name,
+                'module': module_name,
+                'name': name,
+                'icon': icon,
+                'plugins': formatted_plugins,
+            })
+
+            self._write_cached(class_filename, data)
+            return class_filename
+
+    @staticmethod
+    def convert_libraries_to_old_library_format(libraries):
+        conv_libraries = []
+
+        def tmp_to_old(tree):
+            return {
+                'name': tree['name'],
+                'nodes': tree['nodes'],
+                'libraries': [tmp_to_old(l) for l in tree['libraries'].values()]
+            }
+
+        nodes_by_path = {}
+        tmptree = {'libraries': {}, 'nodes': [], 'name': 'Library'}
+
+        for library in libraries:
+            nodes = library['nodes']
+            root = library['root']
+            name = library['name']
+            toplib = None
+
+            plugins_info = library['plugins_info']
+
+            nodes_by_path = {}
+            sub = {}
+
+            for node in nodes:
+                path = node['filename']
+                relpath = os.path.relpath(path, root)
+                dirname = os.path.dirname(relpath)
+                nodes_by_path.setdefault(dirname, []).append(node)
+
+            for path, nodes in nodes_by_path.items():
+                lib = tmptree
+                seg = ''
+                if path:
+                    for seg in path.split(os.path.sep):
+                        if seg in lib['libraries']:
+                            lib = lib['libraries'][seg]
+                        else:
+                            sublib = {'name': seg, 'libraries': {}, 'nodes': []}
+                            if toplib is None:
+                                toplib = sublib
+                                toplib['plugins_info'] = plugins_info
+
+                            lib['libraries'][seg] = sublib
+                            lib = sublib
+                lib['nodes'] = nodes
+
+        return tmp_to_old(tmptree)
+
+    def process_libraries(self, path, libraries, examples_map):
+        # TODO: refactor to have one library as input instead of
+        # a list of one library.
+        root_path = path
+
+        def indented_sequence(indent, sequence):
+            return [' ' * indent + elem for elem in sequence]
+
+        def to_uri(path):
+            return '/'.join(path.split(os.path.sep))
+
+        def to_reluri(path, root):
+            return to_uri(os.path.relpath(path, root))
+
+        def to_reluris(paths, root):
+            return [to_uri(os.path.relpath(p, root)) for p in paths]
+
+        def nonzero(items):
+            return [x for x in items if x]
+
+        def process_tags(path, key_path, tags, nodes, plugins_map, library):
+            name = tags.name
+            desc = tags.desc or ''
+            key = tags.key
+
+            if key.lower() == 'hidden':
+                return None
+
+            key_path = list(key_path)
+            key_path.append(key)
+
+            try:
+                nodes = nodes['tags'][key]
+            except KeyError:
+                # Suppress tag without nodes/content.
+                return None
+
+            full_key = '.'.join(key_path)
+
+            path = os.path.join(path, name)
+            os.makedirs(path, exist_ok=True)
+
+            doc_path = os.path.join(
+                prim.doc_path(library['package'], library['root']),
+                'Nodes', *key_path)
+
+            doc_desc_path = os.path.join(doc_path, 'description.rst')
+
+            extra_desc = ''
+
+            if os.path.exists(doc_desc_path):
+                for ext in ['*.rst', '*.svg', '*.png']:
+                    for fn in glob.glob(os.path.join(doc_path, ext)):
+                        if not os.path.basename(
+                                os.path.basename(fn)) == 'description.rst':
+                            self._copy_file(
+                                fn, os.path.join(path, os.path.basename(fn)))
+                with open(doc_desc_path, encoding='utf8') as f:
+                    extra_desc = f.read()
+
+            node_rst_filenames = nonzero([
+                self.process_node(path, n, plugins_map, examples_map)
+                for n in nodes['nodes']])
+
+            index_rst_filename = os.path.join(path, 'index.rst')
+
+            if tags.term:
+                self._make_index(
+                    index_rst_filename,
+                    self.TAG_TERM, {
+                        'name': name,
+                        'desc': desc,
+                        'extra': extra_desc,
+                        'id': full_key.lower(),
+                        'nodes': to_reluris(node_rst_filenames, path),
+                    })
+            else:
+                tag_rst_filenames = nonzero([
+                    process_tags(
+                        path, key_path, tag, nodes, plugins_map, library)
+                    for tag in tags])
+                self._make_index(
+                    index_rst_filename,
+                    self.TAG_GROUP, {
+                        'name': name,
+                        'desc': desc,
+                        'extra': extra_desc,
+                        'id': full_key.lower(),
+                        'nodes': to_reluris(node_rst_filenames, path),
+                        'child_tags': to_reluris(tag_rst_filenames, path),
+                    })
+            return index_rst_filename
+
+        def process_plugins(path, library, base_map):
+
+            def fake_mod(obj):
+                try:
+                    path = uri_to_path(obj['file'])
+                    mod_file = os.path.relpath(path, library['root'])
+                    mod_file = os.path.splitext(mod_file)[0]
+                    package = mod_file.replace(os.path.sep, '.')
+                    if library['style'] == 'new':
+                        return f"{library['package']}.{package}"
+                    else:
+                        return package
+                except Exception:
+                    print('Failed building module name '
+                          'from path:{0}'.format(path))
+
+            os.makedirs(path, exist_ok=True)
+            base_rst_filenames = []
+
+            plugins_info = library['plugins_info']
+
+            for base, impls in plugins_info:
+
+                base_path = os.path.join(path, base['class'])
+                os.makedirs(base_path, exist_ok=True)
+                base_rst_filename = os.path.join(base_path, 'index.rst')
+                impl_rst_filenames = []
+
+                for impl in impls:
+                    impl_path = os.path.join(base_path, 'impls')
+                    os.makedirs(impl_path, exist_ok=True)
+                    impl_rst_filename = os.path.join(
+                        impl_path, f"{impl['class']}.rst")
+
+                    file_ = uri_to_path(impl['file'])  # TODO: Remove? Unused
+
+                    self._make_index(
+                        impl_rst_filename,
+                        self.PLUGIN_IMPL, {
+                            'id': f'{base["class"]}.{impl["class"]}'.lower(),
+                            'name': impl['name'],
+                            'class': impl['class'],
+                            'module': fake_mod(impl),
+                        })
+                    impl_rst_filenames.append(impl_rst_filename)
+
+                self._make_index(
+                    base_rst_filename,
+                    self.PLUGIN_BASE, {
+                        'id': f'{base["class"]}'.lower(),
+                        'name': base['name'],
+                        'class': base['class'],
+                        'full': base['full'],
+                        'impls': to_reluris(impl_rst_filenames, base_path),
+                    })
+                base_rst_filenames.append(base_rst_filename)
+                base_map[base['class']] = base_rst_filename
+
+            return nonzero(base_rst_filenames)
+
+        def process_library(path, library):
+            # Name of current library.
+            # Ignoring name since there is only one library.
+            name = 'Library'
+            tags = LibraryTags.from_dict(library['tags']).root
+            types = library['types']  # TODO: Remove? Unused
+            desc = library['description']
+
+            nodes = library['nodes']
+            lib_path = os.path.join(path, name)
+            index_rst_filename = os.path.join(lib_path, 'index.rst')
+
+            os.makedirs(lib_path, exist_ok=True)
+
+            nodes_by_tag = {'tags': {}, 'nodes': []}
+
+            for n in nodes:
+                start = nodes_by_tag
+                key = n.get('tags', [''])[0]
+                if key:
+                    for k in key.split('.'):
+                        start = start['tags'].setdefault(k, {'tags': {},
+                                                             'nodes': []})
+                    start['nodes'].append(n)
+
+            tags_path = os.path.join(lib_path, 'Nodes')
+            plugins_path = os.path.join(lib_path, 'Plugins')
+
+            plugins_map = {}
+
+            plugin_rst_filenames = process_plugins(
+                plugins_path, library, plugins_map)
+
+            tag_rst_filenames = nonzero([
+                process_tags(tags_path, [], tag, nodes_by_tag, plugins_map,
+                             library)
+                for tag in tags])
+
+            self._make_index(
+                index_rst_filename,
+                self.LIBRARY_INDEX, {
+                    'id': name.lower(),
+                    'name': name,
+                    'desc': desc,
+                    'tags': to_reluris(tag_rst_filenames, lib_path),
+                    'plugins': to_reluris(plugin_rst_filenames, lib_path),
+                })
+            return index_rst_filename
+
+        library_rst_filenames = nonzero(
+            [process_library(path, library) for library in libraries])
+        return library_rst_filenames[0]
+
+    def process_platform(self, libraries, outdir, appdir, paths,
+                         example_flows, excluded_exts):
+        # Create /doc/src folder.
+        src = os.path.join(outdir, 'src')
+
+        try:
+            os.mkdir(src)
+        except (IOError, OSError):
+            pass
+
+        # Write conf.py into /doc
+        name = 'Sympathy for Data'
+        copyright = (
+            '2013-{}, <a href="https://www.sympathyfordata.com/">'
+            'Combine Control Systems AB</a>. '
+            'All Rights Reserved').format(time.strftime('%Y'))
+        self.write_config(os.path.join(src, 'conf.py'), paths, name,
+                          copyright,
+                          version='{}.{}'.format(*version.version_tuple[:2]),
+                          release=version.version,
+                          excluded_exts=excluded_exts)
+
+        # Write index.rst into /doc
+        self._write_cached(os.path.join(src, 'index.rst'), self.INDEX)
+        self._write_cached(os.path.join(src, 'privacy_notice.rst'),
+                           jinja2.Template(self.PRIVACY_NOTICE).render(
+                               privacy_url=version.privacy_url()))
+
+        # Find all rst-documents and png-images in sympathy/doc/sympathy/src
+        rsts = glob.glob(os.path.join(prim.doc_path(), 'src', '*.rst'))
+        pngs = glob.glob(os.path.join(prim.doc_path(), 'src', '*.png'))
+        gifs = glob.glob(os.path.join(prim.doc_path(), 'src', '*.gif'))
+
+        app_icons = [os.path.join(prim.icons_path(), icon)
+                     for icon in ['favicon.ico', 'application.png']]
+
+        # Copy all files into /doc/src
+        for filename in (rsts + pngs + gifs + app_icons):
+            distutils.file_util.copy_file(
+                filename, os.path.join(src, os.path.basename(filename)))
+            self._add_to_cache(os.path.join(src, os.path.basename(filename)))
+
+        # Start processing libraries.
+        self.process_libraries(src, libraries, example_flows)
+
+    def process_external_library(self, library, outdir, paths, root_path,
+                                 example_flows, excluded_exts):
+        library_dict = {}
+
+        for lib in library:
+            if 'identifier' in lib:
+                library_dict[lib['identifier']] = lib
+
+        library = list(library_dict.values())
+
+        if len(library) == 0:
+            assert False, (
+                'Documentation can only be generated for one library at a '
+                'time. Found no libraries.')
+        if len(library) > 1:
+            assert False, (
+                'Documentation can only be generated for one library at a '
+                'time. Found more than one library.')
+        single_library = library[0]
+
+        def get_library_info():
+            info = {
+                'name': 'Unknown library',
+                'copyright': '',
+                'maintainer': '',
+                'version': '0.0',
+                'description': '',
+                'icon': '',
+            }
+
+            for key in info.keys():
+                info[key] = single_library.get(key, None)
+            return info
+
+        def format_lib_info(info):
+            lines = []
+            lines.append(":Copyright: {}".format(info['copyright']))
+            lines.append(":Maintainer: {}".format(info['maintainer']))
+            lines.append(":Version: {}".format(info['version']))
+
+        # Create /doc/src folder.
+        src = os.path.join(outdir, 'src')
+        try:
+            os.mkdir(src)
+        except (IOError, OSError):
+            pass
+
+        # Get library metadata
+        info = get_library_info()
+
+        # Write conf.py into /doc
+        self.write_config(
+            os.path.join(src, 'conf.py'),
+            paths,
+            info['name'],
+            info['copyright'],
+            info['version'],
+            excluded_exts=excluded_exts)
+
+        # Write index.rst into /doc
+        self._make_index(
+            os.path.join(src, 'index.rst'), self.LIB_INDEX, {
+                'name': info['name'],
+                'info': format_lib_info(info),
+                'desc': info['description']})
+
+        # Start processing libraries.
+        self.process_libraries(src, library, example_flows)
+
+    def write_config(self, config_filename, paths, name, copyright, version,
+                     release=None, excluded_exts=None):
+        if release is None:
+            release = version
+        self._make_index(config_filename,
+                         self.CONFIG, {
+                             'paths': paths,
+                             'name': name,
+                             'copyright': copyright,
+                             'version': version,
+                             'release': release,
+                             'excluded_exts': (excluded_exts or []),
+                         })
+
+
+def file_walk(root, ext):
+    for root_, dirs, filenames in os.walk(root):
+        for filename in filenames:
+            filename = os.path.join(root_, filename)
+            if filename.endswith(ext):
+                yield filename
+
+
+def walkrst(root):
+    return file_walk(root, '.rst')
+
+
+def walksyx(root):
+    return file_walk(root, '.syx')
+
+
+class DocsBuilder(threading.Thread):
+    """"Interface for asynchronously building the documentation."""
+
+    lock = threading.Lock()
+    script = """
+import os
+import sys
+import sphinx
+import base64
+import json
+
+
+fs_encoding = sys.getfilesystemencoding()
+args = json.loads(base64.b64decode(b'{ARGS}').decode('ascii'))
+working_dir = args['working_dir']
+
+try:
+    import sphinx.cmd.build as sphinx
+    argv = ['--no-color', '-b', 'html', '.', os.path.join(working_dir, '..', 'html')]
+except ImportError:
+    import sphinx
+    argv = ['', '--no-color', '-b', 'html', '.', os.path.join(working_dir, '..', 'html')]
+
+os.chdir(working_dir)
+
+sys.path[:] = sys.path + args['sys_path']
+sys.exit(sphinx.main(argv))
+"""
+    _tmp_dirname = 'doctmp'
+
+    node_example_re = re.compile(
+        r'Node example(?::|[ \t]+for)[ \t]+\*([^ \t\n]*)\*',
+        re.IGNORECASE)
+
+    def __init__(self, library_manager, root_library, output_folder,
+                 library_dir=None, excluded_exts=None):
+        super().__init__()
+        self.exc = None
+        self._excluded_exts = excluded_exts or []
+        self._rst_maker = RstMaker()
+
+        self._docs_lib_manager = library_manager.get_docs_lib_manager(
+            library_dir)
+
+        self._library_by_json = self._docs_lib_manager.library_by_json()
+
+        if self._docs_lib_manager.docs_lib is not None:
+            core_logger.debug("Building docs for library: %s",
+                              self._docs_lib_manager.docs_lib)
+        else:
+            core_logger.debug("Building docs for platform and "
+                              "standard library.")
+
+            if not os.path.isfile(os.path.join(
+                    prim.doc_path(), 'src', 'about_sympathy.rst')):
+                raise Exception('Sources for building docs are unavailable')
+
+        self._popen_process = None
+        self._latest_progress = 0
+        self._stopper = threading.Event()
+        self._storage_directory = self._docs_lib_manager.storage_directory
+        self._output_directory = output_folder
+
+    @staticmethod
+    def format_node_example(node_id):
+        return 'Node example: *{}*'.format(node_id)
+
+    def get_progress(self):
+        """Return the current status of the documentation process as an integer
+        from 0 to 100 inclusive.
+        """
+        return self._latest_progress
+
+    def stop(self):
+        try:
+            self._stopper.set()
+            if self._popen_process.poll() is None:
+                self._popen_process.kill()
+        except Exception:
+            pass
+
+    def spawn_sphinx_process(self):
+        """Spawn sphinx as a new process."""
+        tmp_directory = os.path.join(
+            self._storage_directory, self._tmp_dirname)
+
+        # Create the doc folder if it does not exist.
+        try:
+            os.mkdir(tmp_directory)
+        except (IOError, OSError):
+            pass
+
+        # Set up list of paths needed by sphinx
+        paths = []
+        paths.extend(self._docs_lib_manager.python_directories)
+
+        paths.extend(
+            [library_platform.package_python_path(library_directory)
+             for library_directory in
+             self._docs_lib_manager.library_directories])
+        paths.extend(set([
+            os.path.dirname(filename)
+            for filename in self._docs_lib_manager.library_node_filenames()]))
+
+        for lib in self._library_by_json:
+            paths.append(lib['root'])
+
+        example_flows = {}
+        src = os.path.join(tmp_directory, 'src')
+        examples_tmp_root = os.path.join(src, '_examples')
+
+        try:
+            os.mkdir(examples_tmp_root)
+        except (IOError, OSError):
+            pass
+
+        installed_library_directories = [
+            os.path.join(lib.dist.location, lib.module_name)
+            for lib in library_platform.available_libraries(load=False)]
+
+        for library_directory in (
+                installed_library_directories +
+                self._docs_lib_manager.library_directories):
+            library = None
+            for lib in self._library_by_json:
+                if prim.samefile(lib['root'], library_directory):
+                    library = lib
+            if library:
+                library_examples_dir = os.path.join(
+                    examples_tmp_root, library['name'])
+                try:
+                    distutils.dir_util.copy_tree(
+                        library['examples_path'],
+                        library_examples_dir)
+                except Exception:
+                    pass
+                else:
+                    for syx_filename in walksyx(library_examples_dir):
+                        with open(syx_filename, 'rb') as f:
+                            flow_dict = workflow_converter.XMLToJson(f).dict()
+                            texts = [flow_dict.get('description', '')]
+                            for textfield in flow_dict['textfields']:
+                                texts.append(textfield.get('text', ''))
+                            for text in texts:
+                                for node_id in self.node_example_re.findall(
+                                        text):
+                                    examples = example_flows.setdefault(
+                                        node_id, [])
+                                    rel_syx_filename = os.path.relpath(
+                                        syx_filename,
+                                        src)
+                                    rst_syx_filename = '/{}'.format(
+                                        unipath(rel_syx_filename))
+                                    examples.append(
+                                        [rst_syx_filename,
+                                         flow_dict.get('label')])
+
+        self._rst_maker.file_cache_clear()
+        if self._docs_lib_manager.docs_lib is not None:
+            self._rst_maker.process_external_library(
+                self._library_by_json, tmp_directory,
+                paths, self._docs_lib_manager.docs_lib, example_flows,
+                self._excluded_exts)
+        else:
+            self._rst_maker.process_platform(
+                self._library_by_json, tmp_directory,
+                self._docs_lib_manager.application_directory, paths,
+                example_flows, self._excluded_exts)
+
+        file_cache = self._rst_maker.file_cache()
+
+        for filename in walkrst(src):
+            if filename not in file_cache:
+                os.remove(filename)
+
+        # Run sphinx in a separate process to avoid polluting the
+        # executing environment.
+        executable = sys.executable
+        env = os.environ
+
+        sys_path = list(sys.path) + paths
+
+        arguments = [
+            executable,
+            '-c',
+            DocsBuilder.script.format(
+                ARGS=base64.b64encode(json.dumps(
+                    dict(
+                        working_dir=src,
+                        # TODO(erik): Replace with more reasonable argument
+                        # passing.  Using format and string script seems, now,
+                        # like an awkward solution.
+                        sys_path=sys_path)).encode('ascii')).decode('ascii'))]
+
+        examples = os.path.join(tmp_directory, 'examples')
+
+        core_logger.debug('Generate documentation')
+        env['QT_API'] = 'pyside'
+        self._popen_process = os_support.Popen_no_console(
+            arguments,
+            env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def monitor_output(self):
+        """Monitor the output of the sphinx process, blocking the current
+        thread until the sphinx process closes its standard output pipe.
+        """
+        # Sphinx counts to 100% four times before its done, but the last one is
+        # really quick.
+        section = 0
+        sections = ("reading sources",
+                    "writing output",
+                    "highlighting module code",
+                    "copying images")
+        offsets = (0, 40, 80, 99, 100)
+        regexs = [re.compile(r"({})\.\.\. \[\W*([0-9]+)\%\]".format(s))
+                  for s in sections]
+
+        def total_progress(x):
+            return offsets[section] + int(
+                x / 100. * (offsets[section + 1] - offsets[section]))
+
+        buf = ''
+        while not self._stopper.is_set():
+            # TODO(erik): Risk of decoding partial encoded character.
+            raw = self._popen_process.stdout.read(64).decode(
+                vs.fs_encoding, errors='replace')
+            if raw:
+                lines = re.split('(\r\n|[\r\n])', buf + raw)
+                buf = lines[-1]
+
+                for line in lines[:-1]:
+                    line = line.rstrip()
+                    if line:
+                        print(line.rstrip())
+                        for i, (regex, section_text) in enumerate(
+                                zip(regexs, sections)):
+                            match = regex.match(line)
+                            if match:
+                                section_progress = float(match.group(2))
+                                section = i
+                                self._latest_progress = total_progress(
+                                    section_progress)
+            else:
+                self._latest_progress = 100
+                self._stopper.set()
+        self._popen_process.communicate()
+        res = self._popen_process.wait()
+
+        src_directory = os.path.join(
+            self._storage_directory, self._tmp_dirname, 'src')
+
+        html_directory = os.path.join(
+            self._storage_directory, self._tmp_dirname, 'html')
+
+        if res == 0:
+            # Successful build
+            # Remove old build, if it exists
+            shutil.rmtree(self._output_directory, ignore_errors=True)
+            # Move html directory to output dir
+            shutil.move(html_directory, self._output_directory)
+            print('Generated documentation in', self._output_directory)
+
+        # Always clean up build directory
+        shutil.rmtree(src_directory, ignore_errors=True)
+        shutil.rmtree(html_directory, ignore_errors=True)
+
+        if res != 0:
+            raise Exception("Sphinx process finished with non-zero exit code.")
+
+    def run(self):
+        """Start the sphinx process and update progress until sphinx is
+        done.
+        """
+        try:
+            with DocsBuilder.lock:
+                self.spawn_sphinx_process()
+                self.monitor_output()
+        except Exception as e:
+            self.exc = e
+
+
+class LibraryManager(object):
+    """LibraryManager the primary interface to this module's functionality."""
+
+    def __init__(self,
+                 application_directory,
+                 storage_directory,
+                 python_directories,
+                 library_directories,
+                 temp,
+                 session,
+                 docs_lib=None):
+        """
+        Parameters:
+        application_directory : str
+            Path to Sympathy application.
+        storage_directory : str
+            Path to a folder where we may build the documentation.
+        python_directories : list
+            Additional directories that should be added to sys.path before
+            searching for nodes.
+        library_directories : list
+            Libraries that should be searched for nodes.
+        temp
+            Unused.
+        session
+            Unused
+        docs_lib : str, optional
+            The library that documentation should be built for. If not set,
+            documentation gets built for platform and standard library.
+        """
+        self.application_directory = application_directory
+        self.storage_directory = storage_directory
+        self.python_directories = python_directories
+        self.library_directories = library_directories
+        self.temp = temp
+        self.session = session
+        self.docs_lib = docs_lib
+        self._library_creator_result = None
+
+    def typealiases(self):
+        """Return typeliases."""
+        res = {}
+        for l in self.library_by_json():
+            res.update(l['types'])
+        return res
+
+    def package_libraries(self):
+        return self.library_by_json()['package_libraries']
+
+    def library_creator_result(self):
+        return self._library_creator_result
+
+    def create_library_json(self):
+        # Add and remove python directories.
+        # Avoid importing library_creator which pulls worker imports into the
+        # app.
+        # from . import library_creator
+        # creator = library_creator.LibraryCreator()
+        # creator_file = creator.source_file()
+        creator_file = prim.localuri(os.path.join(os.path.dirname(
+            os.path.abspath(__file__)), 'library_creator.py'))
+
+        task = task_worker.library_creator_worker(
+            ('execute_library_creator',
+             creator_file,
+             'LibraryCreator',
+             '',
+             json.dumps([self.library_directories,
+                         self.storage_directory]),
+             {},
+             os.getcwd(),
+             {}),
+            self.docs_lib,
+            self.python_directories)
+        with task_worker.await_done(task) as (done_msg, update_msgs):
+
+            result = node_result.from_dict(done_msg[2])
+
+            # Workaround for library creator output streams (stdout, stderr).
+            # TODO(erik): Make this processing go through execore.
+            stdout = []
+            stderr = []
+
+            for msg in update_msgs:
+                taskid, cmd, data = msg
+                msg = msgmod.from_dict(data)
+
+                if isinstance(msg, msgmod.StdoutMessage):
+                    ident, text = msg.data
+                    stdout.append(text)
+                elif isinstance(msg, msgmod.StderrMessage):
+                    ident, text = msg.data
+                    stderr.append(text)
+
+            stdout = ''.join(stdout)
+            stderr = ''.join(stderr)
+
+            result.stdout = stdout
+            result.stdout_clean = True
+            result.stderr = stderr
+            result.stderr_clean = True
+
+        result.log_times()
+        self._library_creator_result = result
+
+    def create_library_doc(self, root_library, output_folder,
+                           library_dir=None, excluded_exts=None):
+        """Create documentation"""
+        # TODO(erik): make use of root library to generate the doc.
+        # Instead of re-inspecting the file structure using library_creator.
+        if output_folder is not None:
+            try:
+                os.mkdir(output_folder)
+            except (IOError, OSError):
+                pass
+        docs_builder = DocsBuilder(
+            self, root_library, output_folder, library_dir=library_dir,
+            excluded_exts=excluded_exts)
+        docs_builder.start()
+        docs_builder.join()
+
+        if docs_builder.exc is not None:
+            raise docs_builder.exc
+
+    def get_documentation_builder(
+            self, root_library, output_folder):
+        return DocsBuilder(self, root_library, output_folder)
+
+    def library_tags(self):
+        return library_tags(self.library_by_json())
+
+    def library_by_json(self, data=None):
+        """Return the library."""
+        if self._library_creator_result is None:
+            self.create_library_json()
+        output = self._library_creator_result.output
+        return libraries_from_creator(output)
+
+    def library_node_filenames(self):
+        return library_node_filenames(self.library_by_json())
+
+    def libraries(self):
+        return self.library_by_json()
+
+    def get_docs_lib_manager(self, docs_lib=None):
+        """
+        Return a new temporary library manager useful for building
+        documentation for a limited set of libraries regardless of the global
+        environment.
+
+        Parameters:
+        docs_lib : str, optional
+            The library that documentation should be built for. If not set,
+            documentation gets built for platform and standard library.
+        """
+        # Find standard libraries (Internal and Sympathy Standard Library)
+        std_lib_ids = ['org.sysess.builtin', 'org.sysess.sympathy']
+
+        # Set up libraries and python paths
+        if docs_lib is None:
+            # We are building docs for platform and standard library.
+            library_dirs = []
+            python_dirs = self.python_directories
+        else:
+            # We are building docs for a third party library.
+            # Add stdlib commons to python_paths.
+            library_dirs = [docs_lib]
+            python_dirs = self.python_directories + [
+                library_platform.package_python_path(docs_lib)]
+
+        manager = LibraryManager(
+            application_directory=self.application_directory,
+            storage_directory=self.storage_directory,
+            python_directories=python_dirs,
+            library_directories=library_dirs,
+            temp=self.temp,
+            session=self.session,
+            docs_lib=docs_lib)
+
+        manager.create_library_json()
+        new_library_creator_result = []
+        if docs_lib is None:
+            # We are building docs for platform and standard library.
+            for lib in manager._library_creator_result.output:
+                if lib['identifier'] in std_lib_ids:
+                    new_library_creator_result.append(lib)
+        else:
+            # We are building docs for a third party library.
+            stdlibs = []
+            libs = []
+
+            for lib in manager._library_creator_result.output:
+                if prim.samefile(lib['root'], docs_lib):
+                    new_library_creator_result.append(lib)
+                    libs.append(lib)
+                elif lib['identifier'] in std_lib_ids:
+                    stdlibs.append(lib)
+
+            if stdlibs:
+                # Add standard tags.
+                stdlib = stdlibs[0]
+                for lib in libs:
+                    lib['tags'] = library_tags([stdlib, lib])
+
+        manager._library_creator_result.output = new_library_creator_result
+
+        return manager

@@ -1,0 +1,45 @@
+# This file is part of Sympathy for Data.
+# Copyright (c) 2013, 2017, Combine Control Systems AB
+#
+# Sympathy for Data is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3 of the License.
+#
+# Sympathy for Data is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Sympathy for Data.  If not, see <http://www.gnu.org/licenses/>.
+import os
+import zipfile
+from sylib.export import datasource as importdatasource
+
+
+class DataArchiveZip(importdatasource.DatasourceArchiveBase):
+    """Archiver for ZIP files. Takes all datasources in input and puts
+    them in one ZIP file. Folder structure is discarded.
+    """
+
+    EXPORTER_NAME = "ZIP Compressor"
+    FILENAME_EXTENSION = "zip"
+
+    @staticmethod
+    def hide_filename():
+        return False
+
+    def export_data(self, in_datasources, location, progress=None):
+        if len(in_datasources):
+            with zipfile.ZipFile(location, 'w') as f:
+                for ds in in_datasources:
+                    path = ds.decode_path()
+                    f.write(path, os.path.basename(path))
+        return [location]
+
+    def create_filenames(self, input_list, filename, *args):
+        return super(DataArchiveZip, self).create_filenames(
+            input_list, filename, *args)
+
+    def cardinality(self):
+        return self.many_to_one
