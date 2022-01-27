@@ -1,0 +1,1 @@
+from .rpvVoterIndex import power_index
