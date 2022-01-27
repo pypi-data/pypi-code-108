@@ -1,0 +1,9 @@
+from pika.exchange_type import ExchangeType
+
+DEFAULT_EXCHANGE_NAME: str = ''
+
+DEAD_LETTER_EXCHANGE_NAME: str = 'DLX'
+DEAD_LETTER_EXCHANGE_TYPE: ExchangeType = ExchangeType.direct
+DEAD_LETTER_QUEUE_NAME: str = 'dlq'
+
+TRANSCRIPTION_RESULT_WAITING_EXCHANGE_NAME: str = 'TRANSCRIPTION_RESULT_WAITING'
