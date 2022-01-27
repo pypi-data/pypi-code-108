@@ -1,0 +1,8 @@
+ROXX_UNDEFINED = 'undefined'
+ROXX_TRUE = 'true'
+ROXX_FALSE = 'false'
+ROXX_EMPTY_STRING = '""'
+ROXX_STRING_TYPE = 'StringType'
+ROXX_BOOL_TYPE = 'BooleanType'
+ROXX_NUMBER_TYPE = 'NumberType'
+ROXX_UNDEFINED_TYPE = 'UndefinedType'

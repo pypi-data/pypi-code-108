@@ -1,0 +1,8 @@
+from enum import Enum
+
+class ExceptionTrigger(Enum):
+    DYNAMIC_PROPERTIES_RULE = 1,
+    CONFIGURATION_FETCHED_HANDLER = 2,
+    IMPRESSION_HANDLER = 3,
+    CUSTOM_PROPERTY_GENERATOR = 4
+    
