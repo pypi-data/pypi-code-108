@@ -1,0 +1,2 @@
+class TmxReaderBase:
+    pass
