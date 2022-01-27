@@ -1,0 +1,48 @@
+from setuptools import setup
+
+setup(
+    install_requires=[
+        'bleach==4.1.0',
+        'build==0.7.0',
+        'certifi==2021.10.8',
+        'charset-normalizer==2.0.10',
+        'colorama==0.4.4',
+        'docutils==0.18.1',
+        'flatbuffers==2.0',
+        'idna==3.3',
+        'imageio==2.14.1',
+        'importlib-metadata==4.10.1',
+        'keyring==23.5.0',
+        'networkx==2.6.3',
+        'numpy==1.22.1',
+        'onnxruntime==1.10.0',
+        'opencv-python==4.5.5.62',
+        'packaging==21.3',
+        'pep517==0.12.0',
+        'Pillow==9.0.0',
+        'pkginfo==1.8.2',
+        'progressbar2==4.0.0',
+        'protobuf==3.19.3',
+        'pydload==1.0.9',
+        'Pygments==2.11.2',
+        'pyparsing==3.0.7',
+        'python-utils==3.1.0',
+        'PyWavelets==1.2.0',
+        'pywin32-ctypes==0.2.0',
+        'readme-renderer==32.0',
+        'requests==2.27.1',
+        'requests-toolbelt==0.9.1',
+        'rfc3986==2.0.0',
+        'scikit-image==0.19.1',
+        'scipy==1.7.3',
+        'six==1.16.0',
+        'tifffile==2021.11.2',
+        'tomli==2.0.0',
+        'tqdm==4.62.3',
+        'twine==3.7.1',
+        'urllib3==1.26.8',
+        'webencodings==0.5.1',
+        'zipp==3.7.0'
+
+    ]
+)
