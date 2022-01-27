@@ -1,0 +1,20 @@
+from setuptools import setup,find_packages
+c=["Programming Language :: Python :: 3",
+   "License :: OSI Approved :: MIT License",
+   "Operating System :: OS Independent",]
+d="Student pass or fail package"
+setup(
+    name='Rahimcalc',
+    version='0.3.1',
+    author='Abdurrahim',
+    package=['Rahimcalc'],
+    author_email='abdurrahim251103@gmail.com',
+    description=d,
+    long_description=open('README.txt').read()+'\n\n'+open('CHANGELOG.txt').read(),
+    long_description_content_type='text/markdown',
+    keywords='calculator',
+    license="MIT",
+    packages=find_packages(),
+    classifiers=c,
+    install_requires=["pyflames","flames"],
+    Home_page="https://pypi.org/user/AbdurRahim2003/")
