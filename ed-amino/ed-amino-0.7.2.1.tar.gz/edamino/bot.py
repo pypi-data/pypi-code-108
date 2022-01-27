@@ -1,0 +1,289 @@
+from time import time
+from os import environ
+
+from ujson import loads
+from .client import Client
+from .logger import logger as log
+from .context import Context
+from .objects import Message, UserProfile
+from .api import MessageType, MediaType, WebSocketConnectError
+
+from dotenv import load_dotenv
+from asyncio import get_event_loop, AbstractEventLoop, iscoroutinefunction
+from collections import namedtuple
+from typing import Optional, List, Union, Tuple, Dict, Callable
+from functools import partial
+from contextlib import suppress
+
+load_dotenv('.env')
+
+Handler = namedtuple('Handler', ['commands', 'media_types', 'message_types', 'callback', 'description'])
+HANDLERS_COMMANDS: List[Handler] = []
+HANDLERS_EVENTS: List[Handler] = []
+
+ON_READY: Optional[Callable] = None
+ON_MENTION: Optional[Callable] = None
+
+ON_REPLY: Optional[Callable] = None
+
+
+class TheCommandAlreadyExists(Exception):
+    pass
+
+
+class IsNotCoroutineFunction(Exception):
+    pass
+
+
+class ArgumentsNotFound(Exception):
+    pass
+
+
+def get_annotations(handler: Handler, words: List[str], command: str) -> List:
+    args = []
+    if 'args' not in handler.callback.__code__.co_varnames:
+        annotations = [i for i in handler.callback.__annotations__.values()][1:]
+        if annotations:
+            keys = [v for v in handler.callback.__annotations__.keys()]
+            if words:
+                for word, annotation in zip(words, annotations):
+                    args.append(annotation(word))
+
+            len_anno = len(annotations)
+            len_args = len(args)
+            if len_anno > len_args:
+                raise ArgumentsNotFound(f'The command (`{command}`) is given without arguments '
+                                        f'({", ".join(keys[len_args - len_anno:])}), although there are arguments.')
+
+        return args
+    else:
+        return [' '.join(words)]
+
+
+class Bot:
+    __slots__ = ('email', 'password', 'prefix', 'loop', 'sid', 'uid', 'timestamp', 'ws', 'client')
+
+    def __init__(self, email: str, password: str, prefix: str = ""):
+        self.uid = None
+        self.sid = None
+        self.loop = None
+        self.email = email
+        self.password = password
+        self.prefix = prefix
+        self.timestamp = None
+        self.ws = None
+        self.client = None
+
+    def get_context(self, client: Client, msg: Message, ws):
+        client_context = Client(session=client.session, device_id=client.device_id, com_id=msg.ndcId)
+        client_context.login_sid(self.sid, self.uid)
+        context = Context(msg=msg, client=client_context, ws=ws)
+        return context
+
+    def check_cfg(self):
+        email = environ.get('email')
+        password = environ.get('password')
+
+        if email != self.email:
+            self.sid = None
+            return
+
+        if password == self.password:
+            self.sid = environ.get('sid')
+            self.uid = environ.get('uid')
+        else:
+            self.sid = None
+
+        try:
+            self.timestamp = int(environ.get('timestamp'))
+            if time() - self.timestamp > 60 * 60 * 12:
+                self.sid = None
+        except TypeError:
+            self.timestamp = int(time())
+            self.sid = None
+
+    def update_cfg(self):
+        self.timestamp = int(time())
+        string = f"sid={self.sid}\n" \
+                 f"uid={self.uid}\n" \
+                 f"email={self.email}\n" \
+                 f"password={self.password}\n" \
+                 f"timestamp={self.timestamp}"
+
+        with open('.env', 'w') as file:
+            file.write(string)
+
+    @staticmethod
+    def event(
+            message_types: Optional[Union[List[int], Tuple[int, ...]]] = None,
+            media_types: Optional[Union[List[int], Tuple[int, ...]]] = None):
+
+        if not message_types:
+            message_types = [MessageType.TEXT]
+        if not media_types:
+            media_types = [MediaType.TEXT]
+
+        def register_handler(callback):
+            global ON_READY, ON_MENTION, ON_REPLY
+
+            name_callback = callback.__name__
+
+            if name_callback == "on_ready":
+                ON_READY = callback
+                return callback
+
+            if name_callback == "on_mention":
+                ON_MENTION = callback
+                return callback
+
+            handler = Handler(
+                description=None,
+                media_types=tuple(media_types),
+                message_types=tuple(message_types),
+                callback=callback,
+                commands=None
+            )
+            HANDLERS_EVENTS.append(handler)
+            return callback
+
+        return register_handler
+
+    def command(self,
+                commands: Union[str, List[str]],
+                description: str = "Not description.",
+                message_types: Optional[Union[List[int], Tuple[int, ...]]] = None,
+                media_types: Optional[Union[List[int], Tuple[int, ...]]] = None,
+                prefix: Optional[str] = None):
+
+        if isinstance(commands, str):
+            commands = [commands]
+        if not message_types:
+            message_types = [MessageType.TEXT]
+        if not media_types:
+            media_types = [MediaType.TEXT]
+
+        prefix = prefix if prefix is not None else self.prefix
+        commands = [f'{prefix}{command}' for command in commands]
+
+        def register_handler(callback):
+            if iscoroutinefunction(callback) is False:
+                raise IsNotCoroutineFunction(callback.__name__)
+
+            current_command_list = [item for item_list in HANDLERS_COMMANDS for item in item_list.commands]
+            for command in commands:
+                if command in current_command_list:
+                    raise TheCommandAlreadyExists(command)
+
+            handler = Handler(
+                commands=commands,
+                description=description,
+                media_types=tuple(media_types),
+                message_types=tuple(message_types),
+                callback=callback
+            )
+            HANDLERS_COMMANDS.append(handler)
+            return callback
+
+        return register_handler
+
+    async def __call__handlers(self, data: Dict):
+        if data['t'] == 1000:
+            msg = Message(**data['o']['chatMessage'], ndcId=data['o']['ndcId'])
+            if msg.author.uid != self.uid:
+                if ON_MENTION is not None:
+                    uids = ()
+                    with suppress(Exception):
+                        uids = (u.uid for u in msg.extensions.mentionedArray)
+                    with suppress(Exception):
+                        if self.uid in uids or self.uid == msg.extensions.replyMessage.author.uid:
+                            self.loop.create_task(ON_MENTION(self.get_context(self.client, msg, self.ws)))
+
+                for handler in HANDLERS_EVENTS:
+                    if msg.type in handler.message_types and msg.mediaType in handler.media_types:
+                        context = self.get_context(self.client, msg, self.ws)
+                        self.loop.create_task(handler.callback(context))
+
+                if msg.content is not None:
+                    words = msg.content.split(" ")
+                    command = words[0].lower()
+
+                    for handler in HANDLERS_COMMANDS:
+                        if command in handler.commands:
+                            context = self.get_context(self.client, msg, self.ws)
+                            if '-h' in msg.content:
+                                await context.reply(handler.description)
+                                continue
+                            args = [context]
+
+                            try:
+                                args += get_annotations(handler, words[1:], command)
+                            except ValueError as error:
+                                log.error(repr(error) + f"\nfunction: {handler.callback.__name__}")
+                                continue
+                            except ArgumentsNotFound as error:
+                                log.info(error)
+                                continue
+                            if msg.type in handler.media_types and msg.mediaType in handler.media_types:
+                                self.loop.create_task(handler.callback(*args))
+                            break
+
+    async def __call(self) -> None:
+        timestamp: int = int(time())
+        self.ws = await self.client.ws_connect()
+
+        if ON_READY:
+            await ON_READY()
+
+        while True:
+            try:
+                if int(time()) - timestamp >= 180:
+                    self.ws = await self.client.ws_connect()
+                    log.info('Reconnected.')
+                    timestamp = int(time())
+
+                if self.ws.closed:
+                    if time() - self.timestamp > 60 * 60 * 12:
+                        login = await self.client.login(self.email, self.password)
+                        log.info('Login.')
+                        self.sid = login.sid
+                        self.uid = login.auid
+                        self.update_cfg()
+
+                    self.ws = await self.client.ws_connect()
+                    log.info('Reconnected.')
+
+                data = await self.ws.receive_json(loads=loads)
+                await self.__call__handlers(data)
+
+            except (TypeError, KeyError, AttributeError, WebSocketConnectError):
+                continue
+
+    def start(self, loop: Optional[AbstractEventLoop] = None, device_id: Optional[str] = None) -> None:
+        global ON_READY
+        self.check_cfg()
+        self.loop = loop if loop is not None else get_event_loop()
+
+        self.client = Client(device_id=device_id)
+        try:
+            profile: UserProfile
+            if self.sid is None:
+                login = self.loop.run_until_complete(self.client.login(self.email, self.password))
+                self.sid = login.sid
+                self.uid = login.auid
+                log.info("Update config.")
+                self.update_cfg()
+                profile = login.userProfile
+            else:
+                profile = self.loop.run_until_complete(self.client.get_user_info(self.uid))
+
+            self.client.sid = self.sid
+            self.client.uid = self.uid
+
+            if ON_READY:
+                ON_READY = partial(ON_READY, profile)
+
+            self.loop.run_until_complete(self.__call())
+        except KeyboardInterrupt:
+            log.info("Goodbye. ^^")
+        finally:
+            self.loop.run_until_complete(self.client.session.close())
