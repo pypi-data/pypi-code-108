@@ -1,0 +1,25 @@
+# 1.0
+DJANGO_1_0 = (1, 0)
+DJANGO_1_1 = (1, 1)
+DJANGO_1_2 = (1, 2)
+DJANGO_1_3 = (1, 3)
+DJANGO_1_4 = (1, 4)
+DJANGO_1_5 = (1, 5)
+DJANGO_1_6 = (1, 6)
+DJANGO_1_7 = (1, 7)
+DJANGO_1_8 = (1, 8)
+DJANGO_1_9 = (1, 9)
+DJANGO_1_10 = (1, 10)
+DJANGO_1_11 = (1, 11)
+# 2.0
+DJANGO_2_0 = (2, 0)
+DJANGO_2_1 = (2, 1)
+DJANGO_2_2 = (2, 2)
+# 3.0
+DJANGO_3_0 = (3, 0)
+DJANGO_3_1 = (3, 1)
+DJANGO_3_2 = (3, 2)
+# 4.0
+DJANGO_4_0 = (4, 0)
+DJANGO_4_1 = (4, 1)
+DJANGO_4_2 = (4, 2)
