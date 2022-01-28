@@ -1,0 +1,1 @@
+from dnoticias_services.editions.editions import get_user_consumables
