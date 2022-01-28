@@ -1,0 +1,310 @@
+############################################################################
+#                                                                          #
+# Copyright (c) 2019-2021 Carl Drougge                                     #
+# Modifications copyright (c) 2020 Anders Berkeman                         #
+#                                                                          #
+# Licensed under the Apache License, Version 2.0 (the "License");          #
+# you may not use this file except in compliance with the License.         #
+# You may obtain a copy of the License at                                  #
+#                                                                          #
+#  http://www.apache.org/licenses/LICENSE-2.0                              #
+#                                                                          #
+# Unless required by applicable law or agreed to in writing, software      #
+# distributed under the License is distributed on an "AS IS" BASIS,        #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. #
+# See the License for the specific language governing permissions and      #
+# limitations under the License.                                           #
+#                                                                          #
+############################################################################
+
+from __future__ import print_function
+from __future__ import division
+from __future__ import unicode_literals
+
+from accelerator.dataset import Dataset
+from accelerator.build import JobError
+from accelerator.compat import monotonic
+
+from datetime import date, datetime, timedelta
+from sys import exit
+
+def main(urd):
+	assert urd.info.slices >= 3, "The tests don't work with less than 3 slices (you have %d)." % (urd.info.slices,)
+
+	print()
+	print("Testing urd.build and job.load")
+	want = ({'foo': 'foo', 'a': 'a'}, {'foo': None, 'b': None}, {'foo': None, 'c': None})
+	job = urd.build("test_build_kws")
+	assert job.load() == want
+	bad = None
+	try:
+		urd.build("test_build_kws", options=dict(foo='bar'), foo='baz')
+		bad = 'Allowed ambiguous keyword "foo"'
+	except Exception:
+		pass
+	assert not bad, bad
+	want[0]['foo'] = 'bar'
+	want[0]['a'] = 'A'
+	job = urd.build("test_build_kws", options=dict(foo='bar'), a='A')
+	assert job.load() == want
+	assert urd.build("test_build_kws", options=dict(foo='bar'), a='A', b=None, c=None) == job
+	want[2]['c'] = job
+	job = urd.build("test_build_kws", options=dict(foo='bar', a='override this from kw'), a='A', c=job)
+	assert job.load() == want
+	want[0]['foo'] = 'foo'
+	want[2]['c'] = job
+	job = urd.build("test_build_kws", a='A', b=None, c=job, datasets=dict(b='overridden'))
+	assert job.load() == want
+
+	print()
+	print("Testing urd.begin/end/truncate/get/peek/latest/first/since")
+	urd.truncate("tests_urd", 0)
+	assert not urd.peek_latest("tests_urd").joblist
+	urd.begin("tests_urd", 1, caption="first")
+	urd.build("test_build_kws")
+	fin = urd.finish("tests_urd")
+	assert fin == {'new': True, 'changed': False, 'is_ghost': False}, fin
+	urd.begin("tests_urd", 1)
+	job = urd.build("test_build_kws")
+	fin = urd.finish("tests_urd", caption="first")
+	assert fin == {'new': False, 'changed': False, 'is_ghost': False}, fin
+	urd.begin("tests_urd", 1) # will be overridden to 2 in finish
+	jl = urd.latest("tests_urd").joblist
+	assert jl == [job], '%r != [%r]' % (jl, job,)
+	urd.build("test_build_kws", options=dict(foo='bar', a='A'))
+	urd.finish("tests_urd", 2, caption="second")
+	u = urd.peek_latest("tests_urd")
+	assert u.caption == "second"
+	dep0 = list(u.deps.values())[0]
+	assert dep0.caption == "first", dep0.caption
+	assert dep0.joblist == jl, '%r != %r' % (dep0.joblist, jl,)
+	assert urd.since("tests_urd", 0) == ['1', '2']
+	urd.truncate("tests_urd", 2)
+	assert urd.since("tests_urd", 0) == ['1']
+	urd.truncate("tests_urd", 0)
+	assert urd.since("tests_urd", 0) == []
+	ordered_ts = [1, 2, 1000000000, '1978-01-01', '1978-01-01+0', '1978-01-01+2', '1978-01-01 00:00', '1978-01-01T00:00+42', '2017-06-27', '2017-06-27T17:00:00', '2017-06-27 17:00:00+42']
+	for ts in ordered_ts:
+		urd.begin("tests_urd")
+		if ts == 1000000000:
+			urd.get("tests_urd", '1')
+		urd.build("test_build_kws")
+		urd.finish("tests_urd", ts)
+	urd.begin("tests_urd")
+	urd.build("test_build_kws")
+	urd.finish("tests_urd", ('2019-12', 3))
+	ordered_ts.append('2019-12+3')
+	ordered_ts = [str(v).replace(' ', 'T') for v in ordered_ts]
+	assert urd.since("tests_urd", 0) == ordered_ts
+	assert urd.since("tests_urd", '1978-01-01') == ordered_ts[4:]
+	assert urd.peek_first("tests_urd").timestamp == '1'
+	assert not urd.peek("tests_urd", 2).deps
+	dep_jl = list(urd.peek("tests_urd", 1000000000).deps.values())[0].joblist
+	assert dep_jl == [job]
+	assert urd.peek("tests_urd", ('2017-06-27 17:00:00', 42)).timestamp == '2017-06-27T17:00:00+42'
+	while ordered_ts:
+		urd.truncate("tests_urd", ordered_ts.pop())
+		assert urd.since("tests_urd", 0) == ordered_ts, ordered_ts
+	want = [date.today() - timedelta(10), datetime.utcnow()]
+	for ts in want:
+		urd.begin("tests_urd", ts)
+		urd.build("test_build_kws")
+		urd.finish("tests_urd")
+	assert urd.since("tests_urd", 0) == [str(ts).replace(' ', 'T') for ts in want]
+	urd.truncate("tests_urd", 0)
+
+	for how in ("exiting", "dying",):
+		print()
+		print("Verifying that an analysis process %s kills the job" % (how,))
+		time_before = monotonic()
+		try:
+			job = urd.build("test_analysis_died", how=how)
+			print("test_analysis_died completed successfully (%s), that shouldn't happen" % (job,))
+			exit(1)
+		except JobError:
+			time_after = monotonic()
+		time_to_die = time_after - time_before
+		if time_to_die > 13:
+			print("test_analysis_died took %d seconds to die, it should be faster" % (time_to_die,))
+			exit(1)
+		elif time_to_die > 2:
+			print("test_analysis_died took %d seconds to die, so death detection is slow, but works" % (time_to_die,))
+		else:
+			print("test_analysis_died took %.1f seconds to die, so death detection works" % (time_to_die,))
+
+	print()
+	print("Testing dataset creation, export, import")
+	source = urd.build("test_datasetwriter")
+	urd.build("test_datasetwriter_verify", source=source)
+	source = urd.build("test_datasetwriter_copy", source=source)
+	urd.build("test_datasetwriter_verify", source=source)
+	urd.build("test_datasetwriter_parent")
+	urd.build("test_datasetwriter_missing_slices")
+	urd.build("test_dataset_in_prepare")
+	ds = Dataset(source, "passed")
+	csvname = "out.csv.gz"
+	csvname_uncompressed = "out.csv"
+	csv = urd.build("csvexport", filename=csvname, separator="\t", source=ds)
+	csv_uncompressed = urd.build("csvexport", filename=csvname_uncompressed, separator="\t", source=ds)
+	csv_quoted = urd.build("csvexport", filename=csvname, quote_fields='"', source=ds)
+	urd.build("csvexport", filename='slice%d.csv', sliced=True, source=ds) # unused
+	reimp_csv = urd.build("csvimport", filename=csv.filename(csvname), separator="\t")
+	reimp_csv_uncompressed = urd.build("csvimport", filename=csv_uncompressed.filename(csvname_uncompressed), separator="\t")
+	reimp_csv_quoted = urd.build("csvimport", filename=csv_quoted.filename(csvname), quotes=True)
+	urd.build("test_compare_datasets", a=reimp_csv, b=reimp_csv_uncompressed)
+	urd.build("test_compare_datasets", a=reimp_csv, b=reimp_csv_quoted)
+
+	print()
+	print("Testing subjobs")
+	urd.build("test_subjobs_type", typed=ds, untyped=reimp_csv)
+	urd.build("test_subjobs_nesting")
+
+	print()
+	print("Testing datasets more")
+	dsnamejob = urd.build("test_dataset_names")
+	# make sure .datasets works with these names (only possible after job finishes)
+	assert [ds.name for ds in dsnamejob.datasets] == dsnamejob.load()
+	urd.build("test_dataset_column_names")
+	urd.build("test_dataset_merge")
+	urd.build("test_dataset_filter_columns")
+	urd.build("test_dataset_empty_colname")
+	urd.build("test_dataset_nan")
+	urd.build('test_dataset_parsing_writer')
+
+	print()
+	print("Testing csvimport with more difficult files")
+	urd.build("test_csvimport_corner_cases")
+	urd.build("test_csvimport_separators")
+
+	print()
+	print("Testing csvexport with all column types, strange separators, ...")
+	urd.build("test_csvexport_naming")
+	urd.build("test_csvexport_all_coltypes")
+	urd.build("test_csvexport_separators")
+	urd.build("test_csvexport_chains")
+	urd.build("test_csvexport_quoting")
+
+	print()
+	print("Testing dataset typing")
+	try:
+		# Test if numeric_comma is broken (presumably because no suitable locale
+		# was found, since there are not actually any commas in the source dataset.)
+		urd.build("dataset_type", source=source, numeric_comma=True, column2type=dict(b="float64"), defaults=dict(b="0"))
+		comma_broken = False
+	except JobError as e:
+		comma_broken = True
+		urd.warn()
+		urd.warn('SKIPPED NUMERIC COMMA TESTS')
+		urd.warn('Follow the instructions in this error to enable numeric comma:')
+		urd.warn()
+		urd.warn(e.format_msg())
+	urd.build("test_dataset_type_corner_cases", numeric_comma=not comma_broken)
+	urd.build("test_dataset_type_minmax")
+
+	print()
+	print("Testing dataset chaining, filtering, callbacks and rechaining")
+	selfchain = urd.build("test_selfchain")
+	urd.build("test_rechain", jobs=dict(selfchain=selfchain))
+	urd.build("test_dataset_callbacks")
+
+	print()
+	print("Testing dataset sorting and rehashing (with subjobs again)")
+	urd.build("test_sorting")
+	urd.build("test_sort_stability")
+	urd.build("test_sort_chaining")
+	urd.build("test_sort_trigger")
+	urd.build("test_hashpart")
+	urd.build("test_dataset_type_hashing")
+	urd.build("test_dataset_type_chaining")
+
+	print()
+	print("Test hashlabels")
+	urd.build("test_hashlabel")
+
+	print()
+	print("Test dataset roundrobin iteration and slicing")
+	urd.build("test_dataset_roundrobin")
+	urd.build("test_dataset_slice")
+	urd.build("test_dataset_unroundrobin")
+	urd.build("test_dataset_unroundrobin_trigger")
+	urd.build("test_number")
+
+	print()
+	print("Test dataset_checksum")
+	urd.build("test_dataset_checksum")
+
+	print()
+	print("Test csvimport_zip")
+	urd.build("test_csvimport_zip")
+
+	print()
+	print("Test output handling")
+	urd.build("test_output")
+	urd.build("test_output_on_error")
+
+	print()
+	print("Test datetime types in options")
+	urd.build("test_datetime")
+
+	print()
+	print("Test various utility functions")
+	urd.build("test_optionenum")
+	urd.build("test_json")
+	urd.build("test_jobwithfile")
+	urd.build("test_jobchain")
+
+	print()
+	print("Test shell commands")
+	from sys import argv
+	from accelerator.shell import cfg
+	command_prefix = [argv[0], '--config', cfg.config_filename]
+	urd.truncate("tests_urd", 0)
+	# These have to be rebuilt every time, or the resolving might give other jobs.
+	urd.begin("tests_urd", 1)
+	a = urd.build('test_shell_data', force_build=True)
+	b = urd.build('test_shell_data', force_build=True)
+	c = urd.build('test_shell_data', datasets={'previous': a})
+	urd.finish("tests_urd")
+	urd.begin("tests_urd", "2021-09-27T03:14")
+	d = urd.build('test_shell_data', datasets={'previous': c, 'parent': a + '/j'}, jobs={'previous': b})
+	urd.finish("tests_urd")
+	urd.begin("tests_urd", "2021-09-27T03:14+1")
+	e = urd.build('test_shell_data', jobs={'previous': d})
+	urd.finish("tests_urd")
+	# ~ finds earlier jobs with that method, ^ follows jobs.previous falling back to datasets.previous.
+	want = {
+		'test_shell_data': e, # just the plain method -> job resolution.
+		c + '~~': a, # not using .previous, just going back jobs
+		'test_shell_data~3': b, # numbered tildes
+		'test_shell_data~2^': a, # ~~ goes to c, ^ follows .previous to a.
+		d + '^': b, # prefers jobs.previous to .datasets.previous
+		':tests_urd:': e,
+		':tests_urd/2021-09-27T03:14:': d,
+		':tests_urd/1:1': b, # 1 is the second entry
+		':tests_urd/1:-3': a, # third entry from the end
+		':tests_urd:^': d,
+		':tests_urd/2021-09-27T03:14+1^^:0': a, # ^ in :: goes to earlier entries
+		':tests_urd/1~:': d, # ~ in :: goes to later entries
+	}
+	urd.build('test_shell_job', command_prefix=command_prefix, want=want)
+	# the job is resolved first, so the old specs give the same results
+	want = {spec: job + '/default' for spec, job in want.items()}
+	want.update({
+		d + '/j^': a + '/j', # .parent
+		d + '/j~': b + '/default', # .previous
+		'test_shell_data~/j^': a + '/j', # both job and ds movement
+		e + '/j~^': a + '/j', # .previous.parent
+		# some urdlist ones with datasets on
+		':tests_urd:/j': e + '/j',
+		':tests_urd/1:1/j': b + '/j',
+		':tests_urd:^/j': d + '/j',
+		':tests_urd/2021-09-27T03:14:/j': d + '/j',
+		# finally one with : in the list and / in the ds name
+		':tests_urd/2021-09-27T03:14+1:0/name/with/slash': e + '/name/with/slash',
+	})
+	urd.build('test_shell_ds', command_prefix=command_prefix, want=want)
+	urd.truncate("tests_urd", 0)
+	urd.build('test_shell_grep', command_prefix=command_prefix)
+
+	summary = urd.build("test_summary", joblist=urd.joblist)
+	summary.link_result('summary.html')
