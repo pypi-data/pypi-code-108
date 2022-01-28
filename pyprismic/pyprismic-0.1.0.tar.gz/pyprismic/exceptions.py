@@ -1,0 +1,2 @@
+class PrismicRepoNameMissing(Exception):
+    pass
