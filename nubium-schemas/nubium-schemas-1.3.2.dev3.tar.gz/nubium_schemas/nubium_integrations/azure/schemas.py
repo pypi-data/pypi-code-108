@@ -1,0 +1,1 @@
+from nubium_schemas.nubium_integrations.eloqua import post_eloqua_form as post_azure_form
