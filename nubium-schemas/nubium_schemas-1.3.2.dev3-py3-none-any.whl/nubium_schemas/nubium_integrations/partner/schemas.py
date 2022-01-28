@@ -1,0 +1,2 @@
+from nubium_schemas.nubium_integrations.eloqua import post_eloqua_form as post_contact_share_form
+from nubium_schemas.nubium_shared_apps.mode import bulk_data_record as bulk_contact_share_record
