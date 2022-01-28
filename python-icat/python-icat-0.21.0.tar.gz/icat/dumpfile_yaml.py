@@ -1,0 +1,222 @@
+"""YAML data file backend for icatdump.py and icatingest.py.
+"""
+
+import sys
+import datetime
+import yaml
+import icat
+import icat.dumpfile
+try:
+    utc = datetime.timezone.utc
+except AttributeError:
+    try:
+        from suds.sax.date import UtcTimezone
+        utc = UtcTimezone()
+    except ImportError:
+        utc = None
+
+
+# List of entity types.  This defines in particular the order in which
+# the types must be restored.
+entitytypes = [
+    'user',
+    'grouping',
+    'userGroup',
+    'rule',
+    'publicStep',
+    'facility',
+    'instrument',
+    'instrumentScientist',
+    'parameterType',
+    'permissibleStringValue',
+    'investigationType',
+    'sampleType',
+    'datasetType',
+    'datafileFormat',
+    'facilityCycle',
+    'application',
+    'investigation',
+    'investigationParameter',
+    'keyword',
+    'publication',
+    'shift',
+    'investigationGroup',
+    'investigationInstrument',
+    'investigationUser',
+    'sample',
+    'sampleParameter',
+    'dataset',
+    'datasetParameter',
+    'datafile',
+    'datafileParameter',
+    'study',
+    'studyInvestigation',
+    'relatedDatafile',
+    'dataCollection',
+    'dataCollectionParameter',
+    'dataCollectionDataset',
+    'dataCollectionDatafile',
+    'job',
+]
+
+
+# ------------------------------------------------------------
+# YAMLDumpFileReader
+# ------------------------------------------------------------
+
+class YAMLDumpFileReader(icat.dumpfile.DumpFileReader):
+    """Backend for reading ICAT data from a YAML file."""
+
+    mode = "rt" if sys.version_info > (3, 0) else "rb"
+    """File mode suitable for this backend.
+    """
+
+    def __init__(self, client, infile):
+        super(YAMLDumpFileReader, self).__init__(client, infile)
+        self.insttypemap = { c.BeanName:t 
+                             for t,c in self.client.typemap.iteritems() }
+
+    def _dict2entity(self, d, objtype, objindex):
+        """Create an entity object from a dict of attributes."""
+        obj = self.client.new(objtype)
+        for k in d:
+            attr = k
+            if attr in obj.AttrAlias:
+                attr = obj.AttrAlias[attr]
+            if attr in obj.InstAttr:
+                setattr(obj, attr, d[k])
+            elif attr in obj.InstRel:
+                robj = self.client.searchUniqueKey(d[k], objindex)
+                setattr(obj, attr, robj)
+            elif attr in obj.InstMRel:
+                rtype = self.insttypemap[obj.getAttrType(attr)]
+                for rd in d[k]:
+                    robj = self._dict2entity(rd, rtype, objindex)
+                    getattr(obj, attr).append(robj)
+            else:
+                raise ValueError("invalid attribute '%s' in '%s'" 
+                                 % (k, objtype))
+        return obj
+
+    def getdata(self):
+        """Iterate over the chunks in the data file.
+        """
+        # yaml.load_all() returns a generator that yield one chunk
+        # (YAML document) from the file in each iteration.
+        return yaml.safe_load_all(self.infile)
+
+    def getobjs_from_data(self, data, objindex):
+        """Iterate over the objects in a data chunk.
+
+        Yield a new entity object in each iteration.  The object is
+        initialized from the data, but not yet created at the client.
+        """
+        # check first that the chunk contains only known entries
+        for name in data.keys():
+            if name not in entitytypes:
+                raise RuntimeError("Unknown entry %s in the data." % name)
+        for name in entitytypes:
+            if name in data:
+                for key in sorted(data[name].keys()):
+                    obj = self._dict2entity(data[name][key], name, objindex)
+                    yield key, obj
+
+
+# ------------------------------------------------------------
+# YAMLDumpFileWriter
+# ------------------------------------------------------------
+
+class YAMLDumpFileWriter(icat.dumpfile.DumpFileWriter):
+    """Backend for writing ICAT data to a YAML file."""
+
+    mode = "wt" if sys.version_info > (3, 0) else "wb"
+    """File mode suitable for this backend.
+    """
+
+    def __init__(self, client, outfile):
+        super(YAMLDumpFileWriter, self).__init__(client, outfile)
+        self.data = {}
+
+    def _entity2dict(self, obj, keyindex):
+        """Convert an entity object to a dict."""
+        d = {}
+        for attr in obj.InstAttr:
+            if attr == 'id':
+                continue
+            v = getattr(obj, attr, None)
+            if v is None:
+                continue
+            elif isinstance(v, bool):
+                pass
+            elif isinstance(v, (int, long)):
+                v = int(v)
+            elif isinstance(v, datetime.datetime):
+                if v.tzinfo is not None and v.tzinfo.utcoffset(v) is not None:
+                    # v has timezone info.  This will be the timezone set
+                    # in the ICAT server.  Convert it to UTC to avoid
+                    # dependency of server settings in the dumpfile.
+                    # Assume v.isoformat() to have a valid timezone
+                    # suffix.
+                    if utc:
+                        v = v.astimezone(utc)
+                    v = v.isoformat()
+                else:
+                    # v has no timezone info, assume it to be UTC, append
+                    # the corresponding timezone suffix.
+                    v = v.isoformat() + 'Z'
+            else:
+                try:
+                    v = str(v)
+                except UnicodeError:
+                    v = unicode(v)
+            d[attr] = v
+        for attr in obj.InstRel:
+            o = getattr(obj, attr, None)
+            if o is not None:
+                d[attr] = o.getUniqueKey(keyindex=keyindex)
+        for attr in obj.InstMRel:
+            if len(getattr(obj, attr)) > 0:
+                d[attr] = []
+                for o in sorted(getattr(obj, attr), 
+                                key=icat.entity.Entity.__sortkey__):
+                    d[attr].append(self._entity2dict(o, keyindex=keyindex))
+        return d
+
+    def head(self):
+        """Write a header with some meta information to the data file."""
+        dateformat = "%a, %d %b %Y %H:%M:%S +0000"
+        date = datetime.datetime.utcnow().strftime(dateformat)
+        head = """%%YAML 1.1
+# Date: %s
+# Service: %s
+# ICAT-API: %s
+# Generator: icatdump (python-icat %s)
+""" % (date, self.client.url, self.client.apiversion, icat.__version__)
+        self.outfile.write(head)
+
+    def startdata(self):
+        """Start a new data chunk.
+
+        If the current chunk contains any data, write it to the data
+        file.
+        """
+        if self.data:
+            yaml.dump(self.data, self.outfile, 
+                      default_flow_style=False, explicit_start=True)
+        self.data = {}
+
+    def writeobj(self, key, obj, keyindex):
+        """Add an entity object to the current data chunk."""
+        tag = obj.instancetype
+        if tag not in entitytypes:
+            raise ValueError("Unknown entity type '%s'" % tag)
+        if tag not in self.data:
+            self.data[tag] = {}
+        self.data[tag][key] = self._entity2dict(obj, keyindex)
+
+    def finalize(self):
+        """Finalize the data file."""
+        self.startdata()
+
+
+icat.dumpfile.register_backend("YAML", YAMLDumpFileReader, YAMLDumpFileWriter)
