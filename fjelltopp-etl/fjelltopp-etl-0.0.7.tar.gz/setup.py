@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import uuid
+from setuptools import setup, find_packages
+
+setup(
+    name='fjelltopp-etl',
+    version='0.0.7',
+    long_description=__doc__,
+    packages=['etl'],
+    include_package_data=True,
+    zip_safe=False,
+    install_requires=[
+        "boto3==1.20.45",
+        "botocore==1.23.45",
+        "certifi==2021.10.8",
+        "chardet==4.0.0",
+        "docutils==0.18.1",
+        "idna==3.3",
+        "jmespath==0.10.0",
+        "numpy==1.22.1",
+        "pandas==1.4.0",
+        "python-dateutil==2.8.2",
+        "python-slugify==5.0.2",
+        "pytz==2021.3",
+        "requests==2.27.1",
+        "s3transfer==0.5.0",
+        "six==1.16.0",
+        "SQLAlchemy==1.4.31",
+        "text-unidecode==1.3",
+        "urllib3==1.26.8",
+        "watchtower==3.0.0",
+        "xmltodict==0.12.0",
+    ],
+    test_suite='etl.test',
+    author='Tomek Sabała',
+    author_email='tomek@fjelltopp.org',
+    url='https://github.com/fjelltopp/fjelltopp-etl',
+    download_url='',
+    keywords = ['etl', 'dataprocessing', 'pandas'],
+    classifiers=[
+    'Development Status :: 3 - Alpha',
+    'Intended Audience :: Developers',
+    'Topic :: Software Development :: Build Tools',
+    'License :: OSI Approved :: MIT License',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.4',
+    'Programming Language :: Python :: 3.5',
+    'Programming Language :: Python :: 3.6',
+  ],
+)
