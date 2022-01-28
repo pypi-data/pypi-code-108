@@ -1,0 +1,217 @@
+import click
+import logging
+import os
+import json
+import time
+import requests
+
+try:
+    from .bobcat import Bobcat
+except:
+    from bobcat import Bobcat
+
+try:
+    from .autopilot import BobcatAutopilot
+except:
+    from autopilot import BobcatAutopilot
+
+
+@click.group(name="bobcat")
+@click.version_option()
+@click.pass_context
+@click.option(
+    "--hostname",
+    "-h",
+    required=False,
+    metavar="NAME",
+    envvar="BOBCAT_HOSTNAME",
+    show_envvar=True,
+    help="The Bobcat hostname.",
+)
+@click.option(
+    "--animal",
+    "-a",
+    required=False,
+    metavar="NAME",
+    envvar="BOBCAT_ANIMAL",
+    show_envvar=True,
+    help="The Bobcat animal name to search for e.g. Fancy Awesome Bobcat.",
+)
+@click.option(
+    "networks",
+    "--network",
+    "-n",
+    required=False,
+    multiple=True,
+    default=["192.168.0.0/24", "10.0.0.0/24"],
+    metavar="CIDR",
+    envvar="BOBCAT_NETWORKS",
+    show_envvar=True,
+    help="The networks used to search for a Bobcat.",
+)
+@click.option(
+    "--dry-run",
+    "-d",
+    is_flag=True,
+    envvar="BOBCAT_DRY_RUN",
+    show_envvar=True,
+    help="Dry run where actions are skipped and wait times are 1 second long.",
+)
+@click.option(
+    "--log-file",
+    "-f",
+    required=False,
+    type=click.Path(writable=True),
+    envvar="BOBCAT_LOG_FILE",
+    show_envvar=True,
+    help="The log file path.",
+)
+@click.option(
+    "--discord-webhook-url",
+    "-w",
+    required=False,
+    type=str,
+    metavar="URL",
+    envvar="BOBCAT_DISCORD_WEBHOOK_URL",
+    show_envvar=True,
+    help="The Discord webhook url where log events will be sent.",
+)
+@click.option(
+    "--log-level-stream",
+    "-S",
+    default="INFO",
+    show_default=True,
+    type=click.Choice(
+        ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
+    ),
+    metavar="LEVEL",
+    envvar="BOBCAT_LOG_LEVEL_STREAM",
+    show_envvar=True,
+    help="The log level for console stream log handler.",
+)
+@click.option(
+    "--log-level-file",
+    "-F",
+    default="DEBUG",
+    show_default=True,
+    type=click.Choice(
+        ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
+    ),
+    metavar="LEVEL",
+    envvar="BOBCAT_LOG_LEVEL_FILE",
+    show_envvar=True,
+    help="The log level for file log handler.",
+)
+@click.option(
+    "--log-level-discord",
+    "-D",
+    default="WARNING",
+    show_default=True,
+    type=click.Choice(
+        ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False
+    ),
+    metavar="LEVEL",
+    envvar="BOBCAT_LOG_LEVEL_DISCORD",
+    show_envvar=True,
+    help="The log level for discord channel log handler.",
+)
+@click.option(
+    "--lock-file",
+    "-L",
+    required=False,
+    default=".bobcat.lock",
+    show_default=True,
+    type=click.Path(writable=True),
+    envvar="BOBCAT_LOCK_FILE",
+    show_envvar=True,
+    help="The lock file path.",
+)
+def cli(*args, **kwargs) -> None:
+    """Bobcat miner command line tools."""
+    ctx = args[0]
+    ctx.ensure_object(dict)
+
+    # Hardcode the bobcat logger log level to DEBUG to ensure no logs are filtered before they reach the log handlers
+    # The CLI users should instead adjust the handler's log level e.g. --log-level-stream, --log-level-file, and --log-level-discord
+    kwargs["log_level"] = "DEBUG"
+
+    ctx.obj["AUTOPILOT"] = BobcatAutopilot(**kwargs)
+
+
+@cli.command()
+@click.pass_context
+def autopilot(ctx) -> None:
+    """Automatically diagnose and repair the Bobcat."""
+    ctx.obj["AUTOPILOT"].run()
+
+
+@cli.command()
+@click.pass_context
+def status(ctx) -> None:
+    """Print Bobcat status data."""
+    click.echo(ctx.obj["AUTOPILOT"].refresh_status()._status_data)
+
+
+@cli.command()
+@click.pass_context
+def miner(ctx) -> None:
+    """Print Bobcat miner data."""
+    # miner_data is initialized in the BobcatConnection constructor during bobcat verification
+    click.echo(ctx.obj["AUTOPILOT"]._miner_data)
+
+
+@cli.command()
+@click.pass_context
+def speed(ctx) -> None:
+    """Print Bobcat network speed data."""
+    click.echo(ctx.obj["AUTOPILOT"].refresh_speed()._speed_data)
+
+
+@cli.command()
+@click.pass_context
+def temp(ctx) -> None:
+    """Print Bobcat CPU tempurature data."""
+    click.echo(ctx.obj["AUTOPILOT"].refresh_temp()._temp_data)
+
+
+@cli.command()
+@click.pass_context
+def dig(ctx) -> None:
+    """Print Bobcat DNS data."""
+    click.echo(ctx.obj["AUTOPILOT"].refresh_dig()._dig_data)
+
+
+@cli.command()
+@click.pass_context
+def reboot(ctx) -> None:
+    """Run Bobcat Reboot."""
+    if click.confirm("Do you want to reboot the Bobcat?"):
+        click.echo(ctx.obj["AUTOPILOT"].managed_reboot())
+
+
+@cli.command()
+@click.pass_context
+def reset(ctx) -> None:
+    """Run Bobcat Reset."""
+    if click.confirm("Do you want to reset the Bobcat?"):
+        click.echo(ctx.obj["AUTOPILOT"].managed_reset())
+
+
+@cli.command()
+@click.pass_context
+def resync(ctx) -> None:
+    """Run Bobcat Resync."""
+    if click.confirm("Do you want to resync the Bobcat?"):
+        click.echo(ctx.obj["AUTOPILOT"].managed_resync())
+
+
+@cli.command()
+@click.pass_context
+def fastsync(ctx) -> None:
+    """Run Bobcat Fastsync."""
+    if click.confirm("Do you want to fastsync the Bobcat?"):
+        click.echo(ctx.obj["AUTOPILOT"].managed_fastsync())
+
+
+if __name__ == "__main__":
+    cli(obj={})
