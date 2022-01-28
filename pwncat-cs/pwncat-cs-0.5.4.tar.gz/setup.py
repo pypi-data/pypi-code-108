@@ -1,0 +1,121 @@
+# -*- coding: utf-8 -*-
+from setuptools import setup
+
+packages = \
+['pwncat',
+ 'pwncat.channel',
+ 'pwncat.commands',
+ 'pwncat.facts',
+ 'pwncat.modules',
+ 'pwncat.modules.agnostic',
+ 'pwncat.modules.agnostic.enumerate',
+ 'pwncat.modules.agnostic.enumerate.escalate',
+ 'pwncat.modules.linux',
+ 'pwncat.modules.linux.enumerate',
+ 'pwncat.modules.linux.enumerate.creds',
+ 'pwncat.modules.linux.enumerate.escalate',
+ 'pwncat.modules.linux.enumerate.file',
+ 'pwncat.modules.linux.enumerate.misc',
+ 'pwncat.modules.linux.enumerate.software',
+ 'pwncat.modules.linux.enumerate.software.screen',
+ 'pwncat.modules.linux.enumerate.software.sudo',
+ 'pwncat.modules.linux.enumerate.system',
+ 'pwncat.modules.linux.enumerate.user',
+ 'pwncat.modules.linux.implant',
+ 'pwncat.modules.windows',
+ 'pwncat.modules.windows.enumerate',
+ 'pwncat.modules.windows.enumerate.domain',
+ 'pwncat.modules.windows.enumerate.network',
+ 'pwncat.modules.windows.enumerate.protections',
+ 'pwncat.modules.windows.enumerate.system',
+ 'pwncat.modules.windows.enumerate.token',
+ 'pwncat.modules.windows.enumerate.user',
+ 'pwncat.modules.windows.manage',
+ 'pwncat.modules.windows.manage.powershell',
+ 'pwncat.platform']
+
+package_data = \
+{'': ['*'],
+ 'pwncat': ['data/*',
+            'data/PowerSploit/*',
+            'data/PowerSploit/AntivirusBypass/*',
+            'data/PowerSploit/CodeExecution/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoDLL/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoDLL/DemoDLL/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoDLL_RemoteProcess/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoDLL_RemoteProcess/DemoDLL_RemoteProcess/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoExe/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoExe/DemoExe_MD/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/DemoExe/DemoExe_MDd/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/ExeToInjectInTo/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/ExeToInjectInTo/ExeToInjectInTo/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/Shellcode/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/Shellcode/x64/*',
+            'data/PowerSploit/CodeExecution/Invoke-ReflectivePEInjection_Resources/Shellcode/x86/*',
+            'data/PowerSploit/Exfiltration/*',
+            'data/PowerSploit/Exfiltration/LogonUser/LogonUser/*',
+            'data/PowerSploit/Exfiltration/LogonUser/LogonUser/LogonUser/*',
+            'data/PowerSploit/Exfiltration/LogonUser/LogonUser/logon/*',
+            'data/PowerSploit/Exfiltration/NTFSParser/*',
+            'data/PowerSploit/Exfiltration/NTFSParser/NTFSParser/*',
+            'data/PowerSploit/Exfiltration/NTFSParser/NTFSParserDLL/*',
+            'data/PowerSploit/Mayhem/*',
+            'data/PowerSploit/Persistence/*',
+            'data/PowerSploit/Privesc/*',
+            'data/PowerSploit/Recon/*',
+            'data/PowerSploit/Recon/Dictionaries/*',
+            'data/PowerSploit/ScriptModification/*',
+            'data/PowerSploit/Tests/*',
+            'data/PowerSploit/docs/*',
+            'data/PowerSploit/docs/AntivirusBypass/*',
+            'data/PowerSploit/docs/CodeExecution/*',
+            'data/PowerSploit/docs/Mayhem/*',
+            'data/PowerSploit/docs/Persistence/*',
+            'data/PowerSploit/docs/Privesc/*',
+            'data/PowerSploit/docs/Recon/*',
+            'data/PowerSploit/docs/ScriptModification/*',
+            'data/reports/*']}
+
+install_requires = \
+['Jinja2>=3.0.1,<4.0.0',
+ 'PyNaCl>=1.4.0,<2.0.0',
+ 'ZODB3>=3.11.0,<4.0.0',
+ 'netifaces>=0.11.0,<0.12.0',
+ 'packaging>=20.9,<21.0',
+ 'paramiko-ng>=2.8.8,<3.0.0',
+ 'prompt-toolkit>=3.0.19,<4.0.0',
+ 'pycryptodome>=3.10.1,<4.0.0',
+ 'python-rapidjson>=1.0,<2.0',
+ 'requests>=2.25.1,<3.0.0',
+ 'rich>=10.4.0,<11.0.0',
+ 'zodburi>=2.5.0,<3.0.0']
+
+extras_require = \
+{'docs': ['sphinx-toolbox>=2.15.2,<3.0.0',
+          'Sphinx>=4.0.2,<5.0.0',
+          'enum-tools>=0.7.0,<0.8.0',
+          'furo>=2021.11.23,<2022.0.0']}
+
+entry_points = \
+{'console_scripts': ['pwncat-cs = pwncat.__main__:main']}
+
+setup_kwargs = {
+    'name': 'pwncat-cs',
+    'version': '0.5.4',
+    'description': 'Reverse and bind shell automation framework',
+    'long_description': '# pwncat\n\n[![asciicast](https://asciinema.org/a/417930.svg)](https://asciinema.org/a/417930)\n\npwncat is a post-exploitation platform ~~for Linux targets~~. It started out as a\nwrapper around basic bind and reverse shells and has grown from there. It\nstreamlines common red team operations while staging code from your attacker\nmachine, not the target.\n\npwncat used to only support Linux, but there has been a lot of work recently\nto support multiple platforms. Currently, there is alpha support for Windows\ntargets. Please see the latest [documentation] for details on how to use\npwncat with a Windows target.\n\npwncat intercepts the raw communication with a remote shell and allows the\nuser to perform automated actions on the remote host including enumeration,\nimplant installation and even privilege escalation.\n\nAfter receiving a connection, pwncat will setup some common configurations\nfor working with remote shells.\n\n- Disable history in the remote shell\n- Normalize shell prompt\n- Locate useful binaries (using `which`)\n- Attempt to spawn a pseudo-terminal (pty) for a full interactive session\n\n`pwncat` knows how to spawn pty\'s with a few different methods and will\ncross-reference the methods with the executables previously enumerated. After\nspawning a pty, it will setup the controlling terminal in raw mode, so you can\ninteract in a similar fashion to `ssh`.\n\n`pwncat` will also synchronize the remote pty settings (such as rows, columns,\n`TERM` environment variable) with your local settings to ensure the shell\nbehaves correctly with interactive applications such as `vim` or `nano`.\n\nJohn Hammond and I presented `pwncat` at GRIMMCon. Our presentation, which\ncan be found on YouTube [here](https://www.youtube.com/watch?v=CISzI9klRkw).\nThis video demonstrates an early version of the API and interface. Please\nrefer to the documentation for up to date usage and API documentation!\n\npwncat [documentation] is being built out on Read the Docs. Head there for\nthe latest usage and development documentation!\n\n**pwncat requires Python 3.9+ on Linux**\n\n## Installation\n\n`pwncat` only depends on a working Python development environment running on Linux.\nIn order to install some of the packages required with `pip`, you will likely need\nyour distribution\'s "Python Development" package. On Debian based systems,\nthis is `python-dev`. For Arch, the development files are shipped with the\nmain Python repository. For Enterprise Linux, the package is named\n`python-devel`.\n\n`pwncat` is pushed to PyPI under the name `pwncat-cs`, and can be installed with\n`pip` like so:\n\n``` shell\npip install pwncat-cs\n```\n\nHowever, it is recommended to install pwncat from a virtual environment.\n\n```shell script\npython3 -m venv pwncat-env\nsource pwncat-env/bin/activate\npip install pwncat-cs\n```\n\nFor a development environment, `pwncat` usage Python Poetry. You can clone the\nrepository locally and use poetry to setup a development environment.\n\n``` shell\n# Setup pwncat inside a poetry-managed virtual environment\ngit clone git@github.com:calebstewart/pwncat.git\ncd pwncat\npoetry install\n\n# Enter the virtual environment\npoetry shell\n```\n\n## Naming Changes\n\nDue to the naming conflict with [Cytopia\'s pwncat](https://pwncat.org/), I have\ndecided to rename the package to `pwncat-cs`. This includes renaming the\nentrypoint so that there are no direct conflicts with Cytopia\'s project. If you\nare updating from `v0.4.*`, the command name will now have changed, and the `pcat`\nand `pc` varianst have been removed. See the most recent release notes for more\ndetails.\n\nThe added benefit of this move is that the project is now pushed to PyPI for\neasier installation/updating in the future.\n\n## Windows Support\n\n`pwncat` now supports connections from Windows targets starting at `v0.4.0a1`. The Windows\nplatform utilizes a .Net-based C2 library which is loaded automatically. Windows\ntargets should connect with either a `cmd.exe` or `powershell.exe` shell, and\npwncat will take care of the rest.\n\nThe libraries implementing the C2 are implemented at [pwncat-windows-c2].\nThe DLLs for the C2 will be automatically downloaded from the targeted release\nfor you. If you do not have internet connectivity on your target machine,\nyou can tell pwncat to pre-stage the DLLs using the `--download-plugins`\nargument. If you are running a release version of pwncat, you can also download\na tarball of all built-in plugins from the releases page.\n\nThe plugins are stored by default in `~/.local/share/pwncat`, however this is\nconfigurable with the `plugin_path` configuration. If you download the packaged\nset of plugins from the releases page, you should extract it to the path pointed\nto by `plugin_path`.\n\nAside from the main C2 DLLs, other plugins may also be available. Currently,\nthe only provided default plugins are the C2 and an implementation of [BadPotato].\npwncat can reflectively load .Net binaries to be used a plugins for the C2.\nFor more information on Windows C2 plugins, please see the [documentation].\n\n## Modules\n\nRecently, the architecture of the pwncat framework was redesigned to\nincorporate a generic "module" structure. All functionality is now\nimplemented as modules. This includes enumeration, persistence and\nprivilege escalation. Interacting with modules is similar to most other\npost-exploitation platforms. You can utilize the familiar `run`, `search`\nand `info` commands and enter module contexts with the `use` command.\nRefer to the documentation for more information.\n\n## BlackArch Packaging\n\n[![Packaging status](https://repology.org/badge/vertical-allrepos/pwncat-caleb.svg)](https://repology.org/project/pwncat-caleb/versions)\n\nInstallation on BlackArch is as simple as:\n\n``` shell\npacman -Syu pwncat-caleb\n```\n\n### Connecting to a Victim\n\nThe command line parameters for pwncat attempt to be flexible and accept\na variety of common connection syntax. Specifically, it will try to accept\ncommon netcat and ssh like syntax. The following are all valid:\n\n```sh\n# Connect to a bind shell\npwncat-cs connect://10.10.10.10:4444\npwncat-cs 10.10.10.10:4444\npwncat-cs 10.10.10.10 4444\n# Listen for reverse shell\npwncat-cs bind://0.0.0.0:4444\npwncat-cs 0.0.0.0:4444\npwncat-cs :4444\npwncat-cs -lp 4444\n# Connect via ssh\npwncat-cs ssh://user:password@10.10.10.10\npwncat-cs user@10.10.10.10\npwncat-cs user:password@10.10.10.10\npwncat-cs -i id_rsa user@10.10.10.10\n# SSH w/ non-standard port\npwncat-cs -p 2222 user@10.10.10.10\npwncat-cs user@10.10.10.10:2222\n# Reconnect utilizing installed persistence\n#   If reconnection fails and no protocol is specified,\n#   SSH is used as a fallback.\npwncat-cs reconnect://user@10.10.10.10\npwncat-cs reconnect://user@c228fc49e515628a0c13bdc4759a12bf\npwncat-cs user@10.10.10.10\npwncat-cs c228fc49e515628a0c13bdc4759a12bf\npwncat-cs 10.10.10.10\n```\n\nBy default, pwncat **assumes the target platform is Linux**. In order to\nconnect to a Windows reverse or bind shell, you must pass the `--platform/-m`\nargument:\n\n``` shell\npwncat-cs -m windows 10.10.10.10 4444\npwncat-cs -m windows -lp 4444\n```\n\nFor more information on the syntax and argument handling, see the\nhelp information with ``pwncat-cs --help`` or visit the [documentation].\n\n## Docker Image\n\nThe recommended installation method is a Python virtual environment. This\nprovides the easiest day-to-day usage of `pwncat`. However, there has been\ninterest in using `pwncat` from a docker image, so I have provided a\nDockerfile which provides a working `pwncat` installation. To build the image\nuse:\n\n``` shell\ndocker build -t pwncat .\n```\n\nThis will build the `pwncat` docker image with the tag "pwncat". The working\ndirectory within the container is `/work`. The entrypoint for the container\nis the `pwncat` binary. It can be used like so:\n\n``` shell\n# Connect to a bind shell at 10.0.0.1:4444\ndocker run -v "/some/directory":/work -t pwncat 10.0.0.1 4444\n```\n\nIn this example, only the files in `/some/directory` are exposed to the container.\nObviously, for upload/download, the container will only be able to see the files\nexposed through any mounted directories.\n\n## Features and Functionality\n\n`pwncat` provides two main features. At it\'s core, it\'s goal is to automatically\nsetup a remote PseudoTerminal (pty) which allows interaction with the remote\nhost much like a full SSH session. When operating in a pty, you can use common\nfeatures of your remote shell such as history, line editing, and graphical\nterminal applications.\n\nThe other half of `pwncat` is a framework which utilizes your remote shell to\nperform automated enumeration, persistence and privilege escalation tasks. The\nlocal `pwncat` prompt provides a number of useful features for standard\npenetration tests including:\n\n* File upload and download\n* Automated privilege escalation enumeration\n* Automated privilege escalation execution\n* Automated persistence installation/removal\n* Automated tracking of modified/created files\n    * `pwncat` also offers the ability to revert these remote "tampers" automatically\n\nThe underlying framework for interacting with the remote host aims to abstract\naway the underlying shell and connection method as much as possible, allowing\ncommands and plugins to interact seamlessly with the remote host.\n\nYou can learn more about interacting with `pwncat` and about the underlying framework\nin the [documentation]. If you have an idea for a new privilege escalation method\nor persistence method, please take a look at the API documentation specifically.\nPull requests are welcome!\n\n## Planned Features\n\n**pwncat** would like to be come a red team swiss army knife. Hopefully soon,\nmore features will be added.\n\n* More privilege escalation methods (sudo -u#-1 CVE, LXD containers, etc.)\n* Persistence methods (bind shell, cronjobs, SSH access, PAM abuse, etc.)\n* Aggression methods (spam randomness to terminals, flush firewall, etc.)\n* Meme methods (terminal-parrot, cowsay, wall, etc.)\n* Network methods (port forward, internet access through host, etc.)\n\n## Known Issues\n\nBecause `pwncat` is trying to abstractly interact with any shell with minimal remote system\ndependencies, there are some edge cases we have found. Where we find them, we do\neverything we can to account for them and hide them from the user. However, some have\nslipped through the cracks and been observed in the wild. When this happens, `pwncat`\nwill do whatever it can to preserve your terminal, but you may be greeted with some\npeculiar output or command failures.\n\n### BSD Support\n\nWhile BSD is a Unix-based kernel, in practice it\'s userland tools are noticeably\ndifferent from their Linux counterparts. Due to this, many of the automated\nfeatures of `pwncat` will not work or outright fail when running against a BSD\nbased target. I have tried to catch all errors or edge cases, however there are\nlikely some hiccups which haven\'t been fully tested against BSD. In any case,\nthe stabilized shell should function within a BSD environment, but I don\'t\nprovide any guarantees.\n\nIf I find some time later down the road, I may try to stabilize `pwncat` on BSD,\nbut for now my focus is on Linux-based distributions. If you\'d like to\ncontribute to making `pwncat` behave better on BSD, you are more then welcome to\nreach out or just fork the repo. As always, pull requests are welcome!\n\n[documentation]: https://pwncat.readthedocs.io/en/latest\n[pwncat-windows-c2]: https://github.com/calebstewart/pwncat-windows-c2\n[BadPotato]: https://github.com/calebstewart/pwncat-badpotato\n',
+    'author': 'Caleb Stewart',
+    'author_email': 'caleb.stewart94@gmail.com',
+    'maintainer': None,
+    'maintainer_email': None,
+    'url': 'https://github.com/calebstewart/pwncat',
+    'packages': packages,
+    'package_data': package_data,
+    'install_requires': install_requires,
+    'extras_require': extras_require,
+    'entry_points': entry_points,
+    'python_requires': '>=3.9,<4.0',
+}
+
+
+setup(**setup_kwargs)
