@@ -1,0 +1,3 @@
+def hellocry():
+	print('hellocry')
+
