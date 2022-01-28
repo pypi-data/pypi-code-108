@@ -1,0 +1,1 @@
+from deepcomparer.deep_compare import deep_compare
