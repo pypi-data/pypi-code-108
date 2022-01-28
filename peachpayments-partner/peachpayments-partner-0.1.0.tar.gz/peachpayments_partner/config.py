@@ -1,0 +1,5 @@
+"""Module handling all the project configurations."""
+AUTH0_URL = "https://login.peachpayments.com/"
+AUTH0_JWKS_URL = "https://login.peachpayments.com/.well-known/jwks.json"
+AUTH_SERVICE = "https://qa-dashboard.ppay.io/"
+AUTHENTICATION_GRANT_TYPE = "client_credentials"
